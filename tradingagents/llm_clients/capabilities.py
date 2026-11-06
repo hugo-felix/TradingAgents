@@ -43,6 +43,8 @@ class ModelCapabilities:
     # (Coding Plan, MiniMax-Text-01, etc.), so we only set it where the
     # model actually consumes it. (#826)
     requires_reasoning_split: bool = False
+    # Empty means reasoning_effort has not been documented for this model.
+    reasoning_effort_levels: tuple[str, ...] = ()
 
 
 # DeepSeek's thinking models accept the ``tools`` array but reject the
@@ -89,9 +91,24 @@ _DEFAULT = ModelCapabilities(
     preferred_structured_method="function_calling",
 )
 
+# BigModel chat-completions: JSON object output is supported; 5.3 only
+# accepts low/high/max, while 5.2 also accepts the documented aliases.
+_GLM_52 = ModelCapabilities(
+    supports_tool_choice=False, supports_json_mode=True, supports_json_schema=False,
+    preferred_structured_method="json_mode",
+    reasoning_effort_levels=("none", "minimal", "low", "medium", "high", "xhigh", "max"),
+)
+_GLM_53 = ModelCapabilities(
+    supports_tool_choice=False, supports_json_mode=True, supports_json_schema=False,
+    preferred_structured_method="json_mode", reasoning_effort_levels=("low", "high", "max"),
+)
+
 
 # Exact-ID matches take precedence over pattern matches.
 _BY_ID: dict[str, ModelCapabilities] = {
+    "glm-5.2": _GLM_52,
+    "glm-5.3": _GLM_53,
+    "glm-5.3-flash": _GLM_53,
     "deepseek-chat": _DEEPSEEK_CHAT,
     "deepseek-reasoner": _DEEPSEEK_THINKING,
     "deepseek-flash": _DEEPSEEK_THINKING,

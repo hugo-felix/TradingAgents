@@ -4,10 +4,33 @@ import json
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    finish_grounded_report,
+    grounded_run_enabled,
+    grounding_instruction,
+    validation_update,
+)
+
 WRAP_UP = (
     "You have used every tool round this report allows. Write your final report "
     "now from the tool results above, and say which data you could not retrieve."
 )
+
+
+def report_instruction(state) -> str:
+    """A versioned run separates model interpretation from code-rendered facts."""
+    if not grounded_run_enabled(state):
+        return '\n Make sure to append a Markdown table at the end of the report to organize key points clearly.'
+    return '\n\n' + grounding_instruction(evidence_from_state(state))
+
+
+def finish_analyst_turn(state, llm, message, report, role, *, task_context=""):
+    if message.tool_calls or not grounded_run_enabled(state):
+        return message, report, {}
+    result = finish_grounded_report(llm, report, evidence_from_state(state), task_context=task_context)
+    published = AIMessage(content=result.content, id=message.id)
+    return published, result.content, validation_update(role, result)
 
 
 def take_turn(prompt, llm, tools, messages):

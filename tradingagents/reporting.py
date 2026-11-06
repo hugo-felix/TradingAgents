@@ -9,7 +9,14 @@ run produces the same on-disk report tree a CLI run does.
 from datetime import datetime
 from pathlib import Path
 
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    facts_from_evidence,
+    grounded_run_enabled,
+)
 from tradingagents.agents.rating import run_rating
+from tradingagents.dataflows.facts import render_facts
+from tradingagents.dataflows.symbols import is_a_share
 
 
 def analyst_names(keys) -> list[str]:
@@ -43,6 +50,12 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
             lines.append("- Data vendors: " + ", ".join(f"{k} {v}" for k, v in vendors.items()))
     if final_state.get("memory_note"):
         lines.append(f"- Memory log: {final_state['memory_note']}")
+    if final_state.get('report_validation'):
+        checks = final_state['report_validation']
+        failed = sum(entry.get('status') == 'failed' for entry in checks.values())
+        passed = sum(entry.get('status') == 'passed' for entry in checks.values())
+        skipped = sum(entry.get('status') == 'skipped' for entry in checks.values())
+        lines.append(f'- Fact contract checks: {passed} passed, {failed} failed, {skipped} skipped; references/value display/known qualifications, not economic correctness.')
     return "\n".join(lines) + "\n\n"
 
 
@@ -86,6 +99,18 @@ def _report_parts(final_state: dict) -> list[tuple[str, str, list[tuple[str, str
                 written.append((agent, filename, value))
         if written:
             parts.append((heading, folder, written))
+    if grounded_run_enabled(final_state):
+        try:
+            facts = facts_from_evidence(evidence_from_state(final_state))
+            appendix = render_facts(facts)
+        except ValueError:
+            if run_rating(final_state) != 'REVIEW':
+                raise ValueError('Invalid source facts require REVIEW before publication') from None
+            appendix = 'Source fact artifact failed validation; no values published / 来源事实结构无效。'
+        if appendix:
+            text = ('来源事实与限定条件 / Source facts and qualifications\n\n'
+                    '以下为来源记录，不代表已验证经济推理；各章节通过 Fact ID 引用。\n\n' + appendix)
+            parts.append(('VI. Source Facts', '6_evidence', [('Source facts', 'facts.md', text)]))
     return parts
 
 
@@ -99,9 +124,12 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
     Reusing a directory replaces the generated report files, removing sections
     absent from this run and disabled HTML. Other files and directories are kept.
     """
+    if is_a_share(ticker) and any(entry.get('status') == 'failed'
+                                 for entry in final_state.get('report_validation', {}).values()) and run_rating(final_state) != 'REVIEW':
+        raise ValueError('Failed report validation requires REVIEW before publication')
+    parts = _report_parts(final_state)
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
-    parts = _report_parts(final_state)
     sections = []
     for heading, folder, written in parts:
         (save_path / folder).mkdir(exist_ok=True)
@@ -133,4 +161,6 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
         for _agent, filename, _path in agents:
             if (folder, filename) not in current_files:
                 (save_path / folder / filename).unlink(missing_ok=True)
+    if ('6_evidence', 'facts.md') not in current_files:
+        (save_path / '6_evidence' / 'facts.md').unlink(missing_ok=True)
     return save_path / "complete_report.md"

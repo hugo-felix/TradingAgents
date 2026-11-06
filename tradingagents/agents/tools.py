@@ -11,8 +11,14 @@ from langgraph.prebuilt import InjectedState
 
 from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
-from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
-from tradingagents.dataflows.vendors.yahoo.snapshot import build_verified_market_snapshot
+from tradingagents.dataflows.facts import SourceResult
+from tradingagents.dataflows.router import (
+    no_data_available,
+    route_to_vendor,
+    route_to_vendor_result,
+    vendor_unavailable,
+)
+from tradingagents.dataflows.vendors.yahoo.snapshot import build_verified_market_snapshot_result
 
 
 @tool
@@ -69,7 +75,7 @@ def get_indicators(
     return "\n\n".join(results)
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def get_verified_market_snapshot(
     symbol: Annotated[str, InjectedState("company_of_interest")],
     curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],
@@ -77,7 +83,7 @@ def get_verified_market_snapshot(
         int, "number of recent trading rows to include for sanity-checking"
     ] = 30,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
-) -> str:
+) -> tuple[str, dict]:
     """Deterministic verification snapshot for exact market-data claims.
 
     Returns the latest OHLCV row on or before curr_date, common technical
@@ -87,11 +93,11 @@ def get_verified_market_snapshot(
     """
     # An exception out of a tool would end the run.
     try:
-        return build_verified_market_snapshot(symbol, as_of(curr_date, trade_date), look_back_days)
+        return build_verified_market_snapshot_result(symbol, as_of(curr_date, trade_date), look_back_days).as_tool_output()
     except VendorUnavailableError as exc:
-        return vendor_unavailable("get_verified_market_snapshot", exc)
+        return SourceResult(vendor_unavailable("get_verified_market_snapshot", exc)).as_tool_output()
     except NoMarketDataError as exc:
-        return no_data_available(exc)
+        return SourceResult(no_data_available(exc)).as_tool_output()
 
 
 @tool
@@ -111,13 +117,13 @@ def get_fundamentals(
     return route_to_vendor("get_fundamentals", ticker, as_of(curr_date, trade_date))
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def get_balance_sheet(
     ticker: Annotated[str, InjectedState("company_of_interest")],
     freq: Annotated[Literal["annual", "quarterly"], "reporting frequency"] = "quarterly",
     curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
-) -> str:
+) -> tuple[str, dict]:
     """
     Retrieve balance sheet data for the instrument under analysis.
     Uses the configured fundamental_data vendor.
@@ -127,16 +133,16 @@ def get_balance_sheet(
     Returns:
         str: A formatted report containing balance sheet data
     """
-    return route_to_vendor("get_balance_sheet", ticker, freq, as_of(curr_date, trade_date))
+    return route_to_vendor_result("get_balance_sheet", ticker, freq, as_of(curr_date, trade_date)).as_tool_output()
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def get_cashflow(
     ticker: Annotated[str, InjectedState("company_of_interest")],
     freq: Annotated[Literal["annual", "quarterly"], "reporting frequency"] = "quarterly",
     curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
-) -> str:
+) -> tuple[str, dict]:
     """
     Retrieve cash flow statement data for the instrument under analysis.
     Uses the configured fundamental_data vendor.
@@ -146,16 +152,16 @@ def get_cashflow(
     Returns:
         str: A formatted report containing cash flow statement data
     """
-    return route_to_vendor("get_cashflow", ticker, freq, as_of(curr_date, trade_date))
+    return route_to_vendor_result("get_cashflow", ticker, freq, as_of(curr_date, trade_date)).as_tool_output()
 
 
-@tool
+@tool(response_format="content_and_artifact")
 def get_income_statement(
     ticker: Annotated[str, InjectedState("company_of_interest")],
     freq: Annotated[Literal["annual", "quarterly"], "reporting frequency"] = "quarterly",
     curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
-) -> str:
+) -> tuple[str, dict]:
     """
     Retrieve income statement data for the instrument under analysis.
     Uses the configured fundamental_data vendor.
@@ -165,7 +171,71 @@ def get_income_statement(
     Returns:
         str: A formatted report containing income statement data
     """
-    return route_to_vendor("get_income_statement", ticker, freq, as_of(curr_date, trade_date))
+    return route_to_vendor_result("get_income_statement", ticker, freq, as_of(curr_date, trade_date)).as_tool_output()
+
+
+@tool(response_format="content_and_artifact")
+def get_company_disclosures(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Analysis date in YYYY-MM-DD format"] = None,
+    look_back_days: Annotated[int, "Disclosure lookback, default 730 days for comparable periods"] = 730,
+    limit: Annotated[int, "Maximum official PDFs to read, default 6"] = 6,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> tuple[str, dict]:
+    """Read dated mainland A-share official disclosures and operating metrics.
+
+    Returns source-linked PDF excerpts and, where supported, metrics with their
+    reporting periods and units. Company guidance is not an achieved result.
+    Use this for formal announcements, customer data and dividend disclosures.
+    """
+    return route_to_vendor_result("get_company_disclosures", ticker, as_of(curr_date, trade_date), look_back_days, limit).as_tool_output()
+
+
+@tool(response_format="content_and_artifact")
+def get_company_operating_history(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Analysis date in YYYY-MM-DD format"] = None,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> tuple[str, dict]:
+    """Read supported A-share issuer operating history and actual capital expenditure.
+
+    Currently supports China Mobile's verified official layouts. Returns dated,
+    source-linked capex, H1 ARPU and quarterly customer records with units and
+    comparability gaps. Do not annualize half-year capex or splice different
+    broadband definitions. A statement date is not necessarily publication time.
+    """
+    return route_to_vendor_result("get_company_operating_history", ticker, as_of(curr_date, trade_date)).as_tool_output()
+
+
+@tool(response_format="content_and_artifact")
+def get_valuation_comparison(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Analysis date in YYYY-MM-DD format"] = None,
+    look_back_years: Annotated[Literal[1, 3, 5], "Historical valuation window; actual coverage may be shorter"] = 3,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> tuple[str, dict]:
+    """Read A-share historical PE(TTM)/PB percentiles and supported same-day peers.
+
+    Eastmoney is the primary source; the three telecom A-share issuers have an
+    explicit peer group. Percentiles use positive finite observations and state
+    their dates and sample counts. They do not establish fair value. Source
+    coverage and accounting bases can differ; do not mix A-share/H-share data.
+    """
+    return route_to_vendor_result("get_valuation_comparison", ticker, as_of(curr_date, trade_date), look_back_years).as_tool_output()
+
+
+@tool(response_format="content_and_artifact")
+def get_dividends(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Analysis date in YYYY-MM-DD format"] = None,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> tuple[str, dict]:
+    """Read A-share dividend schemes, gross cash per share, dates and scheme stage.
+
+    Confirm amounts and policy against official disclosures. A proposed scheme
+    is not a completed payment, and A-share/H-share currencies can differ.
+    """
+    return route_to_vendor_result("get_dividends", ticker, as_of(curr_date, trade_date)).as_tool_output()
 
 
 @tool
@@ -237,7 +307,8 @@ def get_macro_indicators(
         "'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve', "
         "'real_gdp', 'vix', euro-area aliases such as 'ecb_deposit_rate', "
         "'euro_hicp', 'euro_core_hicp', 'euro_real_gdp', 'germany_10y', "
-        "'france_10y', 'eur_usd', or a raw FRED series ID such as 'CPIAUCSL'.",
+        "'france_10y', 'eur_usd', or a raw FRED series ID such as 'CPIAUCSL'. "
+        "For China use explicit china_cpi, china_pmi, china_gdp, china_lpr or china_credit.",
     ],
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format; the end of the window"],
     look_back_days: Annotated[
@@ -246,9 +317,10 @@ def get_macro_indicators(
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
 ) -> str:
     """
-    Retrieve a macroeconomic indicator time series from FRED (Federal Reserve
-    Economic Data): policy rates, Treasury yields, inflation, labor, and growth,
-    for the US and, through FRED's mirrored series, the euro area.
+    Retrieve a macroeconomic time series. Explicit china_cpi, china_pmi,
+    china_gdp, china_lpr and china_credit identifiers use AKShare China data;
+    cpi and other unprefixed aliases continue to identify the existing FRED
+    US/euro-area series. Never substitute one country's data for another.
     Returns the series title, units, frequency, the latest value, the change
     over the window, and a recent observation table. Uses the configured
     macro_data vendor.

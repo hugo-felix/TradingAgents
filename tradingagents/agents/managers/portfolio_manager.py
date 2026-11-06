@@ -1,21 +1,27 @@
 """Portfolio Manager: synthesises the risk-analyst debate into the final decision.
 
-Uses LangChain's ``with_structured_output`` so the LLM produces a typed
-``PortfolioDecision`` directly, in a single call. Its rating is the run's
-``final_rating``, and the decision is rendered to markdown as
-``final_trade_decision`` for the memory log, CLI display and saved reports.
-When a provider does not expose structured output, the agent falls back to
-free-text generation and the rating is read from that text.
+Versioned A-share runs use the grounded report contract and stop on upstream
+validation failures. Legacy runs use a typed ``PortfolioDecision`` when the
+provider supports it, with free-text rating parsing as their fallback.
 """
 
 from __future__ import annotations
+
+import html
 
 from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_language_instruction,
     get_portfolio_context_from_state,
 )
-from tradingagents.agents.rating import parse_rating
+from tradingagents.agents.evidence import evidence_unavailable
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    grounded_run_enabled,
+    invoke_grounded_report,
+    validation_update,
+)
+from tradingagents.agents.rating import RATING_REVIEW, RATINGS_5_TIER, parse_rating
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.structured import NO_EXTERNAL_TOOLS, bind_structured, invoke_structured
 
@@ -24,7 +30,33 @@ def create_portfolio_manager(llm):
     structured_llm = bind_structured(llm, PortfolioDecision, "Portfolio Manager")
 
     def portfolio_manager_node(state) -> dict:
-        instrument_context = get_instrument_context_from_state(state)
+        if grounded_run_enabled(state):
+            failed = {role: entry for role, entry in state['report_validation'].items()
+                      if entry.get('status') == 'failed'}
+            if failed:
+                issues = [f"{role}: {issue}" for role, entry in failed.items()
+                          for issue in (entry.get('issues') or ['Grounded report validation failed'])]
+                return {
+                    'risk_debate_state': {**state.get('risk_debate_state', {}), 'latest_speaker': 'Judge'},
+                    'final_trade_decision': '**Rating**: REVIEW\n\n上游报告校验失败，暂不形成投资评级。\n'
+                        + '\n'.join(html.escape(issue) for issue in issues)
+                        + '\nValidation scope: references, value display and known qualifications; not economic correctness.',
+                    'final_rating': RATING_REVIEW,
+                    'report_validation': {'portfolio': {'status': 'failed', 'issues': issues, 'repaired': False}},
+                }
+        if evidence_unavailable(state):
+            return {
+                "risk_debate_state": {**state.get("risk_debate_state", {}), "latest_speaker": "Judge"},
+                "final_trade_decision": (
+                    "**Rating**: REVIEW\n\n"
+                    "本次 A 股分析没有取得可用的行情、财务或新闻原始数据，暂不形成投资评级。"
+                    "人气和社区观点不能单独支撑投资评级。"
+                    "请检查来源覆盖、数据接口及分析日期后再评估。\n"
+                    "No usable market, fundamentals or news source data; social attention and opinions alone cannot support a rating."
+                ),
+                "final_rating": RATING_REVIEW,
+            }
+        instrument_context = get_instrument_context_from_state(state, include_evidence=not grounded_run_enabled(state))
         portfolio_context = get_portfolio_context_from_state(state)
 
         history = state["risk_debate_state"]["history"]
@@ -63,8 +95,19 @@ def create_portfolio_manager(llm):
 
 ---
 
-Ground every conclusion in specific evidence from the analysts. The risk debate always contains conflicting stances; deciding which is stronger is the job, so conflict alone is not a reason to Hold. Commit to the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not force a direction to appear decisive. Weigh the analysts on their merits, independent of speaking order.
+Check original source facts, units, periods and qualifications for every conclusion. Analyst claims and disagreements are interpretations, not independent source confirmations. Disclose the strongest counterevidence and limitations. The risk debate always contains conflicting stances; deciding which is stronger is the job, so conflict alone is not a reason to Hold. Commit to the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not force a direction to appear decisive. Weigh the analysts on their merits, independent of speaking order.
 
+{NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
+
+        # The typed rating is the decision; the rendered text only carries it.
+        # Read back from text, a rating the thesis quotes could replace it.
+        result = None
+        if grounded_run_enabled(state):
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state), RATINGS_5_TIER)
+            final_trade_decision = result.content
+            final_rating = result.rating or RATING_REVIEW
+        else:
+            prompt += """
 ## Output
 
 Write these sections, in this order, starting with the rating on its own line:
@@ -73,17 +116,14 @@ Write these sections, in this order, starting with the rating on its own line:
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
 
-{NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
-
-        # The typed rating is the decision; the rendered text only carries it.
-        # Read back from text, a rating the thesis quotes could replace it.
-        decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
-        if decision is not None:
-            final_trade_decision = render_pm_decision(decision)
-            final_rating = decision.rating.value
-        else:
-            final_trade_decision = llm.invoke(prompt).content
-            final_rating = parse_rating(final_trade_decision)
+"""
+            decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")
+            if decision is not None:
+                final_trade_decision = render_pm_decision(decision)
+                final_rating = decision.rating.value
+            else:
+                final_trade_decision = llm.invoke(prompt).content
+                final_rating = parse_rating(final_trade_decision)
 
         new_risk_debate_state = {
             "history": risk_debate_state["history"],
@@ -97,10 +137,13 @@ Write these sections, in this order, starting with the rating on its own line:
             "count": risk_debate_state["count"],
         }
 
-        return {
+        update = {
             "risk_debate_state": new_risk_debate_state,
             "final_trade_decision": final_trade_decision,
             "final_rating": final_rating,
         }
+        if result is not None:
+            update.update(validation_update('portfolio', result))
+        return update
 
     return portfolio_manager_node

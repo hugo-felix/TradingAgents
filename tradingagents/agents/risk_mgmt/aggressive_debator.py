@@ -5,6 +5,12 @@ from tradingagents.agents.context import (
     opponent_argument_or_opening,
     report_or_absent,
 )
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    grounded_run_enabled,
+    invoke_grounded_report,
+    validation_update,
+)
 
 
 def create_aggressive_debator(llm):
@@ -24,30 +30,35 @@ def create_aggressive_debator(llm):
         sentiment_report = report_or_absent(state["sentiment_report"], "sentiment")
         news_report = report_or_absent(state["news_report"], "news")
         fundamentals_report = report_or_absent(state["fundamentals_report"], "fundamentals")
-        instrument_context = get_instrument_context_from_state(state)
+        instrument_context = get_instrument_context_from_state(state, include_evidence=not grounded_run_enabled(state))
         portfolio_context = get_portfolio_context_from_state(state)
 
         trader_decision = state["trader_investment_plan"]
 
-        prompt = f"""As the Aggressive Risk Analyst, your role is to actively champion high-reward, high-risk opportunities, emphasizing bold strategies and competitive advantages. When evaluating the trader's decision or plan, focus intently on the potential upside, growth potential, and innovative benefits—even when these come with elevated risk. Use the provided market data and sentiment analysis to strengthen your arguments and challenge the opposing views. Specifically, respond directly to each point made by the conservative and neutral analysts, countering with data-driven rebuttals and persuasive reasoning. Highlight where their caution might miss critical opportunities or where their assumptions may be overly conservative. Here is the trader's decision:
-
-{trader_decision}
-
-Your task is to create a compelling case for the trader's decision by questioning and critiquing the conservative and neutral stances to demonstrate why your high-reward perspective offers the best path forward. Incorporate insights from the following sources into your arguments:
+        prompt = f"""As the Aggressive Analyst, examine upside opportunities and risk capacity as a hypothesis to test against original evidence. Assess the strongest counterevidence and disclose limitations; revise your view when sources contradict it. Do not manufacture a case for a predetermined position. Analyst reports and debate disagreements are interpretations, not independent source confirmations. Check units, periods, stock versus flow, recognition basis and missing coverage before relying on a claim.
 
 {instrument_context}
-{portfolio_context}
-Market Research Report: {market_research_report}
-Social Media Sentiment Report: {sentiment_report}
-Latest World Affairs Report: {news_report}
-Company Fundamentals Report: {fundamentals_report}
-Here is the current conversation history: {history} Here are the last arguments from the conservative analyst: {current_conservative_response} Here are the last arguments from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
+Portfolio context: {portfolio_context}
+Trader proposal (interpretation): {trader_decision}
+Market research report: {market_research_report}
+Social media sentiment report: {sentiment_report}
+Latest world affairs news: {news_report}
+Fundamentals report: {fundamentals_report}
+Conversation history: {history}
+Other analysts' latest responses:
+{current_conservative_response}
+{current_neutral_response}
 
-Engage actively by addressing any specific concerns raised, refuting the weaknesses in their logic, and asserting the benefits of risk-taking to outpace market norms. Maintain a focus on debating and persuading, not just presenting data. Challenge each counterpoint to underscore why a high-risk approach is optimal. Output conversationally as if you are speaking without any special formatting.""" + get_language_instruction()
+When an opponent has not spoken, offer your own assessment without inventing their claims. State which evidence supports your hypothesis, which weakens it and what remains unknown. A decisive conclusion is welcome when evidence supports it; conflicting interpretations alone do not force Hold.
+""" + get_language_instruction()
 
-        response = llm.invoke(prompt)
-
-        argument = f"Aggressive Analyst: {response.content}"
+        result = None
+        if grounded_run_enabled(state):
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state))
+            content = result.content
+        else:
+            content = llm.invoke(prompt).content
+        argument = f"Aggressive Analyst: {content}"
 
         new_risk_debate_state = {
             "history": history + "\n" + argument,
@@ -63,6 +74,9 @@ Engage actively by addressing any specific concerns raised, refuting the weaknes
             "count": risk_debate_state["count"] + 1,
         }
 
-        return {"risk_debate_state": new_risk_debate_state}
+        update = {"risk_debate_state": new_risk_debate_state}
+        if result is not None:
+            update.update(validation_update('aggressive', result))
+        return update
 
     return aggressive_node

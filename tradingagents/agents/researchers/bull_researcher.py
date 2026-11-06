@@ -4,6 +4,12 @@ from tradingagents.agents.context import (
     opponent_argument_or_opening,
     report_or_absent,
 )
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    grounded_run_enabled,
+    invoke_grounded_report,
+    validation_update,
+)
 
 
 def create_bull_researcher(llm):
@@ -19,38 +25,29 @@ def create_bull_researcher(llm):
         sentiment_report = report_or_absent(state["sentiment_report"], "sentiment")
         news_report = report_or_absent(state["news_report"], "news")
         fundamentals_report = report_or_absent(state["fundamentals_report"], "fundamentals")
-        instrument_context = get_instrument_context_from_state(state)
-        asset_type = state.get("asset_type", "stock")
-        target_label = "stock" if asset_type == "stock" else "asset"
-        fundamentals_label = (
-            "Company fundamentals report"
-            if asset_type == "stock"
-            else "Asset fundamentals report (may be unavailable for crypto)"
-        )
+        instrument_context = get_instrument_context_from_state(state, include_evidence=not grounded_run_enabled(state))
 
-        prompt = f"""You are a Bull Analyst advocating for investing in the {target_label}. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""As the Bull Analyst, examine upside potential as a hypothesis to test against original evidence. Assess the strongest counterevidence and disclose limitations; revise your view when sources contradict it. Do not manufacture a case for a predetermined position. Analyst reports and debate disagreements are interpretations, not independent source confirmations. Check units, periods, stock versus flow, recognition basis and missing coverage before relying on a claim.
 
-Key points to focus on:
-- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
-- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
-- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
-- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
-
-Resources available:
 {instrument_context}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}
-{fundamentals_label}: {fundamentals_report}
-Conversation history of the debate: {history}
-Last bear argument: {current_response}
-Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position.
+Fundamentals report: {fundamentals_report}
+Conversation history: {history}
+Other analysts' latest responses:
+{current_response}
+
+When an opponent has not spoken, offer your own assessment without inventing their claims. State which evidence supports your hypothesis, which weakens it and what remains unknown. A decisive conclusion is welcome when evidence supports it; conflicting interpretations alone do not force Hold.
 """ + get_language_instruction()
 
-        response = llm.invoke(prompt)
-
-        argument = f"Bull Analyst: {response.content}"
+        result = None
+        if grounded_run_enabled(state):
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state))
+            content = result.content
+        else:
+            content = llm.invoke(prompt).content
+        argument = f"Bull Analyst: {content}"
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,
@@ -60,6 +57,9 @@ Use this information to deliver a compelling bull argument, refute the bear's co
             "count": investment_debate_state["count"] + 1,
         }
 
-        return {"investment_debate_state": new_investment_debate_state}
+        update = {"investment_debate_state": new_investment_debate_state}
+        if result is not None:
+            update.update(validation_update('bull', result))
+        return update
 
     return bull_node

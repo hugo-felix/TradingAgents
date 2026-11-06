@@ -4,6 +4,11 @@ from langgraph.graph import MessagesState
 from typing_extensions import TypedDict
 
 
+def merge_report_validation(previous: dict | None, current: dict | None) -> dict:
+    """Parallel roles each own one entry; successive checks replace that role."""
+    return {**(previous or {}), **(current or {})}
+
+
 # Researcher team state
 class InvestDebateState(TypedDict):
     bull_history: Annotated[
@@ -53,6 +58,14 @@ class AgentState(MessagesState):
     sentiment_report: Annotated[str, "Report from the Sentiment Analyst"]
     news_report: Annotated[str, "Report from the News Analyst on company and world news"]
     fundamentals_report: Annotated[str, "Report from the Fundamentals Analyst"]
+
+    # Each analyst writes only its own raw tool records; no parallel reducer needed.
+    market_evidence: dict
+    fundamentals_evidence: dict
+    news_evidence: dict
+    sentiment_evidence: dict
+    report_contract_version: int
+    report_validation: Annotated[dict, merge_report_validation]
 
     # researcher team discussion step
     investment_debate_state: Annotated[

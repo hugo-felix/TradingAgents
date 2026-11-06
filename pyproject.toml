@@ -31,6 +31,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+a-shares = [
+    "akshare>=1.20.27",
+    "pypdf>=6.21.4",
+]
 dev = [
     "ruff>=0.16",
     "pytest>=8.0",

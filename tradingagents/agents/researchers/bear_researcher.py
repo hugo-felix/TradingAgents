@@ -4,6 +4,12 @@ from tradingagents.agents.context import (
     opponent_argument_or_opening,
     report_or_absent,
 )
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    grounded_run_enabled,
+    invoke_grounded_report,
+    validation_update,
+)
 
 
 def create_bear_researcher(llm):
@@ -19,40 +25,29 @@ def create_bear_researcher(llm):
         sentiment_report = report_or_absent(state["sentiment_report"], "sentiment")
         news_report = report_or_absent(state["news_report"], "news")
         fundamentals_report = report_or_absent(state["fundamentals_report"], "fundamentals")
-        instrument_context = get_instrument_context_from_state(state)
-        asset_type = state.get("asset_type", "stock")
-        target_label = "stock" if asset_type == "stock" else "asset"
-        fundamentals_label = (
-            "Company fundamentals report"
-            if asset_type == "stock"
-            else "Asset fundamentals report (may be unavailable for crypto)"
-        )
+        instrument_context = get_instrument_context_from_state(state, include_evidence=not grounded_run_enabled(state))
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the {target_label}. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
-
-Key points to focus on:
-
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
-- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
-- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
-
-Resources available:
+        prompt = f"""As the Bear Analyst, examine downside exposure as a hypothesis to test against original evidence. Assess the strongest counterevidence and disclose limitations; revise your view when sources contradict it. Do not manufacture a case for a predetermined position. Analyst reports and debate disagreements are interpretations, not independent source confirmations. Check units, periods, stock versus flow, recognition basis and missing coverage before relying on a claim.
 
 {instrument_context}
 Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}
-{fundamentals_label}: {fundamentals_report}
-Conversation history of the debate: {history}
-Last bull argument: {current_response}
-Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the {target_label}.
+Fundamentals report: {fundamentals_report}
+Conversation history: {history}
+Other analysts' latest responses:
+{current_response}
+
+When an opponent has not spoken, offer your own assessment without inventing their claims. State which evidence supports your hypothesis, which weakens it and what remains unknown. A decisive conclusion is welcome when evidence supports it; conflicting interpretations alone do not force Hold.
 """ + get_language_instruction()
 
-        response = llm.invoke(prompt)
-
-        argument = f"Bear Analyst: {response.content}"
+        result = None
+        if grounded_run_enabled(state):
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state))
+            content = result.content
+        else:
+            content = llm.invoke(prompt).content
+        argument = f"Bear Analyst: {content}"
 
         new_investment_debate_state = {
             "history": history + "\n" + argument,
@@ -62,6 +57,9 @@ Use this information to deliver a compelling bear argument, refute the bull's cl
             "count": investment_debate_state["count"] + 1,
         }
 
-        return {"investment_debate_state": new_investment_debate_state}
+        update = {"investment_debate_state": new_investment_debate_state}
+        if result is not None:
+            update.update(validation_update('bear', result))
+        return update
 
     return bear_node

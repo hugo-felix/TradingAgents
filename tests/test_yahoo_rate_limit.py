@@ -5,6 +5,8 @@ throttled. "The symbol may be invalid or delisted" is a claim about the company
 that nobody checked, and an exception out of a tool ends the run.
 """
 
+import inspect
+
 import pandas as pd
 import pytest
 import yfinance as yf
@@ -57,7 +59,7 @@ def test_a_rate_limit_that_outlasts_the_retries_is_reported_as_one(yahoo, tool, 
     yahoo.setattr(yf, "Search", _rate_limited)
 
     # Dated today: a past run is not served insider trades at all.
-    out = tool.func(*args, trade_date=get_current_date())
+    out = tool.invoke(dict(inspect.signature(tool.func).bind(*args, trade_date=get_current_date()).arguments))
 
     assert out.startswith("DATA_UNAVAILABLE"), out
     assert "delisted" not in out
@@ -198,7 +200,7 @@ def test_a_snapshot_with_no_rows_is_reported_not_raised(yahoo, frame):
 
     yahoo.setattr(snapshot, "load_ohlcv", load)
 
-    out = get_verified_market_snapshot.func("ZZZZ", DAY, trade_date=DAY)
+    out = get_verified_market_snapshot.invoke({"symbol": "ZZZZ", "curr_date": DAY, "trade_date": DAY})
 
     assert out.startswith("NO_DATA_AVAILABLE"), out
 

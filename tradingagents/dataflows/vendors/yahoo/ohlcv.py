@@ -7,7 +7,12 @@ import yfinance as yf
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.files import replace_file
-from tradingagents.dataflows.symbols import normalize_symbol, safe_ticker_component
+from tradingagents.dataflows.market_session import (
+    cache_predates_completed_session,
+    completed_daily_bars,
+    market_time,
+)
+from tradingagents.dataflows.symbols import is_a_share, normalize_symbol, safe_ticker_component
 from tradingagents.dataflows.vendors.yahoo.common import raise_for_empty, yf_retry
 
 logger = logging.getLogger(__name__)
@@ -152,7 +157,10 @@ def _cache_is_fresh(data_file, as_of_dt, now) -> bool:
     whose ``Close`` is not the closing price, and row inspection cannot tell it
     from a final one (#1150).
     """
-    written = pd.Timestamp.fromtimestamp(os.path.getmtime(data_file))
+    written = (
+        pd.Timestamp(os.path.getmtime(data_file), unit="s", tz="UTC").tz_convert(now.tzinfo)
+        if now.tzinfo is not None else pd.Timestamp.fromtimestamp(os.path.getmtime(data_file))
+    )
     if written.date() != now.date():
         return False
     return as_of_dt.date() < now.date() or (now - written).total_seconds() <= OHLCV_CACHE_TTL_SECONDS
@@ -179,7 +187,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     as_of_dt = pd.to_datetime(as_of_date).normalize()
 
     # One cache file per symbol, holding the latest 5y-to-today download.
-    now = pd.Timestamp.today()
+    now = market_time() if is_a_share(canonical) else pd.Timestamp.today()
     start_date = now - pd.DateOffset(years=5)
     start_str = start_date.strftime("%Y-%m-%d")
     # yfinance ``end`` is EXCLUSIVE; request tomorrow so today's row is included
@@ -203,6 +211,7 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
             not cached.empty
             and "Close" in cached.columns
             and _cache_is_fresh(data_file, as_of_dt, now)
+            and not cache_predates_completed_session(os.path.getmtime(data_file), canonical, as_of_date)
         ):
             data = cached
 
@@ -228,6 +237,9 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
 
     # Filter to as_of_date to prevent look-ahead bias in backtesting.
     data = data[data["Date"] <= as_of_dt]
+    data = completed_daily_bars(data, canonical, as_of_date)
+    if data.empty:
+        raise NoMarketDataError(symbol, canonical, "no completed daily sessions on or before the analysis date")
 
     # A closeless newest bar is an unsettled session, not a symbol without data.
     # _fill_price_gaps below drops it, here and mid-series alike, so the frame

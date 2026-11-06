@@ -9,6 +9,12 @@ from tradingagents.agents.context import (
     get_language_instruction,
     get_portfolio_context_from_state,
 )
+from tradingagents.agents.grounding import (
+    evidence_from_state,
+    grounded_run_enabled,
+    invoke_grounded_report,
+    validation_update,
+)
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
@@ -22,7 +28,7 @@ def create_trader(llm):
 
     def trader_node(state):
         company_name = state["company_of_interest"]
-        instrument_context = get_instrument_context_from_state(state)
+        instrument_context = get_instrument_context_from_state(state, include_evidence=not grounded_run_enabled(state))
         investment_plan = state["investment_plan"]
         # The research plan digests the debate but loses exact price structure;
         # give the Trader the technical market report so entry/stop levels are
@@ -43,56 +49,77 @@ def create_trader(llm):
             grounding = ""
             report_section = ""
 
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a trading agent analyzing market data to make investment decisions. "
-                    "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
-                    + grounding
-                    # Entry/stop are numeric price fields. Asking for concrete
-                    # levels invites a percentage ("15%"), which is not a price
-                    # and fails the structured parse (#1288).
-                    + "State entry price and stop-loss as absolute price levels in the "
-                    "instrument's quote currency (for example 189.5), never a percentage "
-                    "or a range; convert a percentage distance to the price level it "
-                    "implies, or omit the field if you cannot state a number. "
-                    + NO_EXTERNAL_TOOLS
-                    + get_language_instruction()
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Here is the research team's investment plan for {company_name}. "
-                    f"{instrument_context}\n\n"
-                    f"{report_section}"
-                    f"{portfolio_context}\n\n"
-                    f"Proposed Investment Plan:\n{investment_plan}\n\n"
-                    "Make an informed, strategic trading decision.\n\n"
-                    "## Output\n\n"
-                    "Write these sections, in this order, starting with the action "
-                    "on its own line:\n\n"
-                    "- **Action**: exactly one of Buy / Hold / Sell. A research "
-                    "recommendation of Overweight is a Buy and Underweight is a Sell, "
-                    "sized by how strong the case is; conflict alone is not a Hold.\n"
-                    "- **Reasoning**: why, against the plan and the price structure\n"
-                    "- **Entry Price**, **Stop Loss**, **Position Sizing**: when you can state them"
-                ),
-            },
-        ]
-
-        trader_plan = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            messages,
-            render_trader_proposal,
-            "Trader",
+        task_context = (
+            f"Here is the research team's investment plan for {company_name}. "
+            f"{instrument_context}\n\n"
+            f"{report_section}"
+            f"{portfolio_context}\n\n"
+            f"Proposed Investment Plan:\n{investment_plan}\n\n"
+            "Make an informed, strategic trading decision.\n\n"
         )
 
-        return {
+
+        result = None
+        if grounded_run_enabled(state):
+            # The grounded contract renders available source levels; the model
+            # supplies qualitative judgment rather than inventing numeric fields.
+            prompt = (
+                "Evaluate the proposed trade against original source facts, counterevidence and limitations. "
+                "Research and analyst opinions are interpretations, not independent confirmations. "
+                "Conflict alone does not force Hold. Do not invent entry, stop or sizing levels.\n"
+                + get_language_instruction() + NO_EXTERNAL_TOOLS + '\n'
+                + task_context
+            )
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state), ('Buy', 'Hold', 'Sell'))
+            trader_plan = result.content
+        else:
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a trading agent analyzing market data to make investment decisions. "
+                        "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
+                        + grounding
+                        # Entry/stop are numeric price fields. Asking for concrete
+                        # levels invites a percentage ("15%"), which is not a price
+                        # and fails the structured parse (#1288).
+                        + "State entry price and stop-loss as absolute price levels in the "
+                        "instrument's quote currency (for example 189.5), never a percentage "
+                        "or a range; convert a percentage distance to the price level it "
+                        "implies, or omit the field if you cannot state a number. "
+                        + NO_EXTERNAL_TOOLS
+                        + get_language_instruction()
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        task_context
+                        + "## Output\n\n"
+                        "Write these sections, in this order, starting with the action "
+                        "on its own line:\n\n"
+                        "- **Action**: exactly one of Buy / Hold / Sell. A research "
+                        "recommendation of Overweight is a Buy and Underweight is a Sell, "
+                        "sized by how strong the case is; conflict alone is not a Hold.\n"
+                        "- **Reasoning**: why, against the plan and the price structure\n"
+                        "- **Entry Price**, **Stop Loss**, **Position Sizing**: when you can state them"
+                    ),
+                },
+            ]
+            messages[0]['content'] += (
+                " Check original source facts, counterevidence and limitations. Analyst opinions "
+                "and disagreements are interpretations, not independent source confirmations."
+            )
+            trader_plan = invoke_structured_or_freetext(
+                structured_llm, llm, messages, render_trader_proposal, "Trader",
+            )
+
+        update = {
             "messages": [AIMessage(content=trader_plan)],
             "trader_investment_plan": trader_plan,
         }
+        if result is not None:
+            update.update(validation_update('trader', result))
+        return update
 
     return trader_node

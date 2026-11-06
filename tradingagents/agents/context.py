@@ -5,6 +5,7 @@ import logging
 from collections.abc import Mapping
 from typing import Any
 
+from tradingagents.agents.evidence import render_source_evidence
 from tradingagents.dataflows.date_window import is_historical
 from tradingagents.dataflows.vendors.yahoo.fundamentals import get_company_profile
 
@@ -169,22 +170,26 @@ def build_instrument_context(
     return context
 
 
-def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
+def get_instrument_context_from_state(state: Mapping[str, Any], *, include_evidence: bool = True) -> str:
     """Return the instrument context for the current run.
 
     Prefers the identity-resolved context computed once at run start and
     stored on the state (see ``TradingAgentsGraph.resolve_instrument_context``).
     Falls back to a ticker-only context — with no network lookup — when the
     state was constructed without it (bare programmatic states, tests), so a
-    consumer is never forced to make a yfinance call mid-graph.
+    consumer is never forced to make a yfinance call mid-graph. Analysts pass
+    ``include_evidence=False`` because their private tool messages already carry
+    the original sources; downstream roles receive the shared evidence by default.
     """
     context = state.get("instrument_context")
-    if isinstance(context, str) and context.strip():
-        return context
-    return build_instrument_context(
-        str(state["company_of_interest"]),
-        state.get("asset_type", "stock"),
-    )
+    if not isinstance(context, str) or not context.strip():
+        context = build_instrument_context(
+            str(state["company_of_interest"]), state.get("asset_type", "stock"),
+        )
+    evidence = render_source_evidence(state) if include_evidence else ''
+    if evidence:
+        context += "\n\n" + evidence
+    return context
 
 
 def report_or_absent(text: str, source: str) -> str:

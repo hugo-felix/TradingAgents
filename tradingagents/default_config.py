@@ -30,6 +30,7 @@ _ENV_OVERRIDES = {
     # interactive choice, which is skipped when the matching var is set.
     "TRADINGAGENTS_GOOGLE_THINKING_LEVEL":   "google_thinking_level",
     "TRADINGAGENTS_OPENAI_REASONING_EFFORT": "openai_reasoning_effort",
+    "TRADINGAGENTS_GLM_REASONING_EFFORT":    "glm_reasoning_effort",
     "TRADINGAGENTS_ANTHROPIC_EFFORT":        "anthropic_effort",
 }
 
@@ -108,6 +109,7 @@ def build_default_config() -> dict:
         # Provider-specific thinking configuration
         "google_thinking_level": None,      # "high", "minimal", etc.
         "openai_reasoning_effort": None,    # "medium", "high", "low"
+        "glm_reasoning_effort": None,       # 5.3: "low", "high", "max"; 5.2 also accepts aliases
         "anthropic_effort": None,           # "high", "medium", "low"
         # Sampling temperature, forwarded to every provider when set. None leaves
         # each provider at its own default. Lower values reduce run-to-run
@@ -141,6 +143,12 @@ def build_default_config() -> dict:
         "news_article_limit": 20,             # max articles per ticker (ticker-news)
         "global_news_article_limit": 10,      # max articles for global/macro news
         "global_news_lookback_days": 7,       # macro news lookback window
+        # Optional recent Guba bodies for A-share discussion themes. Attention
+        # ranks remain available when discussions are disabled or fail.
+        "a_share_discussions_enabled": True,
+        # Optional same-date Baidu check for the subject's PE(TTM)/PB. Primary
+        # Eastmoney history and peer comparisons remain a single-source series.
+        "a_share_valuation_cross_check": False,
         # Search queries used by get_global_news for macro headlines. Extend or
         # replace to broaden geographic / sector coverage.
         "global_news_queries": [
@@ -158,11 +166,14 @@ def build_default_config() -> dict:
         "data_vendors": {
             "core_stock_apis": "yfinance",       # Options: alpha_vantage, yfinance
             "technical_indicators": "yfinance",  # Options: alpha_vantage, yfinance
-            # Statements come from SEC EDGAR as filed (US filers), then Yahoo; the
-        # overview and insider tools, which SEC EDGAR does not serve, from Yahoo.
-        "fundamental_data": "sec_edgar,yfinance",  # Options: sec_edgar, alpha_vantage, yfinance
-            "news_data": "yfinance",             # Options: alpha_vantage, yfinance
-            "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
+            # AKShare serves A-share statements; SEC EDGAR serves US filings.
+            # Unsupported markets skip each vendor without making a request.
+            # Overview/valuation and insider tools continue to use Yahoo.
+            "fundamental_data": "akshare,sec_edgar,yfinance",
+            "news_data": "akshare,yfinance",  # AKShare: A-share company headlines only
+            "macro_data": "akshare,fred",  # Explicit china_* series, then existing FRED series
+            "company_disclosures": "cninfo,akshare,china_mobile",  # Official PDFs, schemes and operating history
+            "valuation_data": "akshare",  # A-share historical PE(TTM)/PB and same-day peers
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },
         # Tool-level configuration (takes precedence over category-level)

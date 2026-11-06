@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -6,7 +7,9 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.runnables import RunnableLambda
+from langchain_core.utils.function_calling import convert_to_openai_function
 from langchain_openai import ChatOpenAI
 
 from .api_key_env import get_api_key_env
@@ -70,6 +73,50 @@ class LocalCompatibleChatOpenAI(NormalizedChatOpenAI):
         if resolved == "function_calling":
             kwargs.setdefault("tool_choice", None)
         return super().with_structured_output(schema, method=method, **kwargs)
+
+
+class GLMChatOpenAI(NormalizedChatOpenAI):
+    """BigModel/Z.AI's documented Chat Completions wire contract.
+
+    GLM uses max_tokens rather than OpenAI's max_completion_tokens. JSON
+    mode guarantees valid JSON only, so every structured invocation also
+    supplies the schema as an instruction, leaving Pydantic to validate it.
+    """
+
+    def __init__(self, **kwargs):
+        effort = kwargs.get("reasoning_effort")
+        model = kwargs.get("model", "")
+        if effort is not None:
+            levels = get_capabilities(model).reasoning_effort_levels
+            if effort not in levels:
+                raise ValueError(
+                    f"reasoning_effort={effort!r} is not supported for {model}; "
+                    f"documented levels: {', '.join(levels) or 'none'}"
+                )
+        super().__init__(**kwargs)
+
+    def _get_request_payload(self, input_, *, stop=None, **kwargs):
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        if "max_completion_tokens" in payload:
+            payload["max_tokens"] = payload.pop("max_completion_tokens")
+        return payload
+
+    def with_structured_output(self, schema, *, method=None, **kwargs):
+        method = method or "json_mode"
+        structured = super().with_structured_output(schema, method=method, **kwargs)
+        if method != "json_mode":
+            return structured
+        json_schema = convert_to_openai_function(schema)["parameters"]
+        instruction = SystemMessage(content=(
+            "Return only a JSON object matching this JSON Schema. "
+            "Use the supplied evidence and follow all field descriptions.\n"
+            + json.dumps(json_schema, ensure_ascii=False)
+        ))
+
+        def add_schema(input_):
+            return [instruction, *self._convert_input(input_).to_messages()]
+
+        return RunnableLambda(add_schema) | structured
 
 
 def _input_to_messages(input_: Any) -> list:
@@ -266,8 +313,8 @@ OPENAI_COMPATIBLE_PROVIDERS: dict[str, ProviderSpec] = {
     "deepseek":   ProviderSpec(base_url="https://api.deepseek.com", chat_class=DeepSeekChatOpenAI),
     "qwen":       ProviderSpec(base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
     "qwen-cn":    ProviderSpec(base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"),
-    "glm":        ProviderSpec(base_url="https://api.z.ai/api/paas/v4/"),
-    "glm-cn":     ProviderSpec(base_url="https://open.bigmodel.cn/api/paas/v4/"),
+    "glm":        ProviderSpec(base_url="https://api.z.ai/api/paas/v4/", chat_class=GLMChatOpenAI),
+    "glm-cn":     ProviderSpec(base_url="https://open.bigmodel.cn/api/paas/v4/", chat_class=GLMChatOpenAI),
     "minimax":    ProviderSpec(base_url="https://api.minimax.io/v1", chat_class=MinimaxChatOpenAI),
     "minimax-cn": ProviderSpec(base_url="https://api.minimaxi.com/v1", chat_class=MinimaxChatOpenAI),
     "openrouter": ProviderSpec(base_url="https://openrouter.ai/api/v1"),
@@ -399,7 +446,8 @@ class OpenAIClient(BaseLLMClient):
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
                 continue
-            if key == "reasoning_effort" and not _supports_reasoning_effort(self.model):
+            if (key == "reasoning_effort" and self.provider not in ("glm", "glm-cn")
+                    and not _supports_reasoning_effort(self.model)):
                 continue
             llm_kwargs[key] = self.kwargs[key]
 

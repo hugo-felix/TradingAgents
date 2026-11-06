@@ -227,6 +227,171 @@ TradingAgents works with any market Yahoo Finance covers, using the exchange-suf
 - China A-shares: Shanghai `.SS`, Shenzhen `.SZ` (e.g. `600519.SS` for Kweichow Moutai)
 - Crypto: `BTC-USD`, `ETH-USD`
 
+For mainland A-share financial statements and recent company news, install the
+optional AKShare extra:
+
+```bash
+pip install ".[a-shares]"
+tradingagents --ticker 600941.SS
+```
+
+The default vendor chains try AKShare for A-share balance sheets, income
+statements, cash flow statements and company news, then the existing configured
+vendors if AKShare is unavailable. Overseas symbols skip AKShare without making
+a request. Explicit `tool_vendors` / `data_vendors` settings still take precedence.
+Use exchange-qualified stock symbols (`600941.SS` / `.SH`, `000001.SZ`, `.BJ`);
+bare numeric codes and index symbols are not treated as A-share stocks.
+Prices, technical indicators, identity and valuation summaries retain their
+existing sources. Without the extra, the default chain falls back to those
+existing vendors and logs that AKShare is not installed.
+
+The AKShare adapter is organized under `tradingagents/dataflows/vendors/akshare/`:
+`common.py` handles optional SDK access and symbol conversion; `fundamentals.py`,
+`news.py`, `dividends.py`, `macro.py` and `valuation.py` handle their respective data. Package
+exports retain the public functions used by the vendor router. The source-specific
+financial comparisons live alongside the adapter in `financial_metrics.py`.
+
+AKShare statements include report and disclosure dates and amounts in CNY;
+income and cash flow at quarterly reporting dates are **year-to-date**, not
+standalone-quarter figures. Historical runs withhold these statements because
+the feed does not provide a complete archive of original filing revisions.
+News is a recent search sample: only dated headlines naming the company or its
+code are included. AKShare resolves the official stock short name from the
+listing code and searches that name first. If name search has no usable
+headlines in the requested window or fails, it tries the listing code. When
+name resolution is unavailable, it searches the code directly.
+Duplicate URLs and same-day titles are removed; multiple articles may still
+describe one event, and parent-group or H-share stories require scope checks.
+A sample without matching headlines reports coverage as
+unavailable, not that the company had no news.
+
+The extra also provides `get_company_disclosures` (CNInfo announcement indices,
+bounded PDF excerpts and source links) and `get_dividends` (gross A-share cash
+per share, scheme stage and dates). CNInfo retains attributed excerpts and
+validated dividend facts; China Mobile's customer/ARPU metrics are extracted by
+`get_company_operating_history`, described below. Company payout guidance is
+labelled separately from realized results. Capital-expenditure charts and image-only PDFs are not
+treated as reliably extracted numbers. Disclosures are cached and filtered by
+publication date; the public website is not a guaranteed stable API or a full
+historical revision archive. These optional tools degrade to data-unavailable
+messages on missing dependencies or retrieval failures, and are offered only
+for A-share analysis. The default `company_disclosures` vendor chain is
+`cninfo,akshare,china_mobile`, with each tool using its registered implementation.
+
+`get_company_operating_history` currently supports China Mobile's verified layouts:
+up to three official H1 reports with narrative actual capex/ARPU and five distinct
+quarterly customer announcements found through a targeted CNInfo query. Original
+periods, units, URLs and physical PDF pages are retained. Actual capex, capital
+commitments and plans remain separate; half-year actuals are not annualized into
+a company plan. Raw ARPU is not adjusted comparable growth, and wireline broadband
+is not spliced with the expanded broadband-connection definition. Unknown report
+publication dates stay unknown. Official-site text caching expires after six
+hours; a read timestamp is not a publication timestamp. Missing sources or layout
+changes leave explicit gaps; unsupported issuers do not trigger these downloads.
+
+`get_valuation_comparison` uses Eastmoney historical PE(TTM)/PB through AKShare,
+with a default three-year window and an explicit same-day A-share peer set for
+China Mobile, China Telecom and China Unicom. The subject's latest eligible date
+anchors the comparison; absent peer rows and invalid current values are not
+backfilled. Per-metric percentiles use positive finite observations, state actual
+date coverage/sample counts and include the current value (`sample <= current`).
+They do not establish fair value. Other A-shares receive self history without
+automatic peer discovery. The optional `valuation_data` vendor chain defaults to
+`akshare`. Set `a_share_valuation_cross_check=True` for an additional same-date
+Baidu PE/PB check of the subject; it is off by default and never replaces or
+blends the primary series. These two tools are prefetched by A-share fundamentals
+and use the existing source-evidence path. Historical analysis dates withhold
+their current mutable source snapshots because original revision vintages cannot
+be established. No Tushare or paid source is used.
+
+For A-shares, market, fundamentals and news analysts fetch a minimum source set
+before writing their reports. Original tool records (source ID, arguments,
+availability and bounded text) are passed separately to research, trading and
+risk agents and saved in the state log. Availability does not mean every number
+has been verified. If all tracked sources are unavailable, the final decision
+is `REVIEW`, without an investment rating. Other markets keep their existing
+tool flow.
+
+New A-share runs also carry typed numeric facts in LangChain tool artifacts,
+separately from source text. Each value retains its unit/currency, period,
+calculation basis, availability and source qualifications. Models return
+qualitative JSON points with explicit fact/source references; code renders the
+numeric tables once in a shared source-fact appendix at report export. Internal
+discussion carries compact judgments and references; the original evidence and
+canonical fact catalog each appear once per grounded model request. Metric
+names, dates and tickers may contain digits; prose remains a model
+interpretation, not a machine-verified numerical assertion. Dividend currency
+comparators remain together in the appendix. Missing or unverified data remains
+a limitation, never a zero.
+
+The same report contract applies to analysts, research, trading and risk roles.
+A failed draft gets at most one repair; another failure publishes a validation
+failure notice. Original facts remain in the evidence records and report
+appendix. Upstream validation failures force the final outcome
+to `REVIEW`, and the report writer rejects a directional rating with failed
+checks. Validation covers references, numeric presentation and known qualifiers;
+it does **not** prove economic reasoning, accounting recognition, or investment
+merit. Legacy checkpoints have a different execution signature and cannot be
+silently resumed under this contract. Other markets retain their report format.
+
+GLM reasoning effort can be configured through `glm_reasoning_effort` or
+`TRADINGAGENTS_GLM_REASONING_EFFORT`; `None` leaves the provider default. Supported
+levels depend on the selected model and are validated before a run. Token
+budgets use the provider's native `max_tokens` parameter. GLM structured output
+uses JSON mode with the schema included in the request.
+
+Official disclosures are prefetched by the Fundamentals Analyst when selected,
+otherwise by the News Analyst. Analysts use the original results in their private
+tool messages; downstream roles receive the shared evidence. Identical tool
+results are displayed once with all source IDs, while the separate audit records
+remain intact. Analysts can still request missing data or a different range, and
+the News Analyst can verify a specific event when needed.
+
+Disclosures default to a 730-day window and at most six PDFs, prioritizing
+comparable customer/interim periods where found. China Mobile interim excerpts
+retain the tax-adjustment definition, reported growth, company-disclosed free
+cash flow, proposed dividends, service revenues and selected accounting notes.
+Periods, units, proposed versus paid dividends and shareholder scope remain
+explicit; absent comparators or unreadable capex charts remain missing.
+
+`get_macro_indicators` accepts explicit `china_cpi`, `china_pmi`, `china_gdp`,
+`china_lpr` and `china_credit` identifiers through AKShare. Unprefixed aliases
+such as `cpi` keep their existing FRED meaning; US data is never relabelled as
+Chinese data. The default macro chain is `akshare,fred`. Outputs preserve
+units, cumulative GDP/credit periods and missing data. Historical China macro
+and dividend snapshots are conservatively withheld where release/revision
+vintages cannot be verified. No government-site discovery crawler is added.
+
+For A-shares, the Sentiment Analyst skips StockTwits and Reddit. It retrieves
+Eastmoney attention ranks/history and a bounded sample of Guba discussion bodies
+through the existing sentiment node. Attention and discussion themes are reported
+separately, without a composite sentiment score or population bullish/bearish
+percentages. Titles, advertisements and other issuers' recommended posts do not
+establish discussion direction. Original post dates, source links, retrieval
+times and sampling limits are retained in the report/evidence state; last-update
+times are not treated as original publication dates. Body retrieval is limited
+to five posts from at most two list pages, so the sample is neither exhaustive
+nor random. Issuer-forum membership does not prove every post concerns the issuer.
+Set `a_share_discussions_enabled` to `False` to skip the optional discussion feed.
+Missing discussion bodies skip the model summary and report insufficient data;
+source failures do not stop the other analysis. Historical runs withhold these
+mutable current snapshots rather than reconstruct past sentiment. No official
+stable API, historical archive or cross-day reliability is guaranteed. Company
+news remains the News Analyst's responsibility. Social attention and opinions
+alone do not bypass the missing-core-source `REVIEW` guard. Other markets retain their
+existing social-sentiment sources. Snowball/Xueqiu and Tushare are not added.
+
+A-share daily price tables, indicators and verification snapshots use completed
+sessions. Today's bar is excluded before 15:15 Asia/Shanghai time (a 15-minute
+publication buffer after the regular close); a cached pre-close download is
+refreshed after that boundary. Reports must use the actual latest session date.
+AKShare statements retain their reported values and add code-calculated
+comparisons for the latest period, using matching metrics, currencies, units
+and periods. Missing inputs and non-positive growth bases are left uncalculated.
+Yahoo's A-share news fallback also requires an explicit ticker tag or listing
+code in the headline and uses Shanghai calendar days; insufficient coverage is
+reported as unavailable rather than as an absence of company events.
+
 <p align="center">
   <img src="assets/cli/cli_init.png" width="100%" style="display: inline-block; margin: 0 2%;">
 </p>

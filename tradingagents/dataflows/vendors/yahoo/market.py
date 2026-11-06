@@ -8,6 +8,11 @@ from dateutil.relativedelta import relativedelta
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError, VendorError
+from tradingagents.dataflows.market_session import (
+    completed_daily_bars,
+    daily_bar_note,
+    session_not_finalized,
+)
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import price_text, raise_for_empty, yf_retry
 from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale, load_ohlcv
@@ -39,6 +44,10 @@ def get_YFin_data_online(
     if data is None or data.empty:
         raise_for_empty(symbol, canonical, f"rows between {start_date} and {end_date}")
 
+    data = completed_daily_bars(data, canonical, end_date)
+    if data.empty:
+        raise NoMarketDataError(symbol, canonical, "no completed daily sessions in the requested window")
+
     # Remove timezone info from index for cleaner output
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
@@ -58,6 +67,7 @@ def get_YFin_data_online(
     # instrument was priced.
     label = canonical if canonical == symbol.upper() else f"{canonical} (from {symbol})"
     header = f"# Stock data for {label} from {start_date} to {end_date}\n"
+    header += daily_bar_note(data)
     header += f"# Total records: {len(data)}\n\n"
 
     return header + csv_string
@@ -168,6 +178,8 @@ def get_stock_stats_indicators_window(
             # Look up the indicator value for this date
             if date_str in indicator_data:
                 indicator_value = indicator_data[date_str]
+            elif session_not_finalized(symbol, date_str):
+                indicator_value = "N/A: A-share session not finalized (Asia/Shanghai)"
             else:
                 indicator_value = "N/A: Not a trading day (weekend or holiday)"
 
@@ -291,4 +303,6 @@ def get_stock_stats(
         indicator_value = matching_rows[indicator].values[0]
         return indicator_value
     else:
+        if session_not_finalized(symbol, as_of_date):
+            return "N/A: A-share session not finalized (Asia/Shanghai)"
         return "N/A: Not a trading day (weekend or holiday)"

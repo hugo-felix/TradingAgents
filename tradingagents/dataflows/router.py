@@ -6,6 +6,9 @@ from tradingagents.dataflows.errors import (
     VendorNotConfiguredError,
     VendorUnavailableError,
 )
+from tradingagents.dataflows.facts import SourceResult
+from tradingagents.dataflows.vendors import akshare, china_mobile, cninfo
+from tradingagents.dataflows.vendors.akshare import dividends, fundamentals, valuation
 from tradingagents.dataflows.vendors.alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -78,6 +81,14 @@ TOOLS_CATEGORIES = {
             "get_macro_indicators",
         ]
     },
+    "company_disclosures": {
+        "description": "Official A-share disclosures, operating metrics and dividend schemes",
+        "tools": ["get_company_disclosures", "get_dividends", "get_company_operating_history"],
+    },
+    "valuation_data": {
+        "description": "A-share historical valuation and same-day peer comparisons",
+        "tools": ["get_valuation_comparison"],
+    },
     "prediction_markets": {
         "description": "Market-implied probabilities for forward-looking events",
         "tools": [
@@ -91,7 +102,7 @@ TOOLS_CATEGORIES = {
 # sentinel instead of aborting the run (a bad LLM-supplied indicator, a missing
 # key, or a network blip should not crash an analysis over flavour data). Core
 # categories (prices, fundamentals, news) still raise so a broken primary is loud.
-OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets"}
+OPTIONAL_CATEGORIES = {"macro_data", "prediction_markets", "company_disclosures", "valuation_data"}
 
 # Mapping of methods to their vendor-specific implementations
 VENDOR_METHODS = {
@@ -111,22 +122,26 @@ VENDOR_METHODS = {
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "akshare": fundamentals.get_balance_sheet_result,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "sec_edgar": get_sec_edgar_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "akshare": fundamentals.get_cashflow_result,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "sec_edgar": get_sec_edgar_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "akshare": fundamentals.get_income_statement_result,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "sec_edgar": get_sec_edgar_income_statement,
         "yfinance": get_yfinance_income_statement,
     },
     # news_data
     "get_news": {
+        "akshare": akshare.get_news,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
@@ -140,8 +155,13 @@ VENDOR_METHODS = {
     },
     # macro_data
     "get_macro_indicators": {
+        "akshare": akshare.get_macro_data,
         "fred": get_fred_macro_data,
     },
+    "get_company_disclosures": {"cninfo": cninfo.get_company_disclosures_result},
+    "get_dividends": {"akshare": dividends.get_dividends_result},
+    "get_company_operating_history": {"china_mobile": china_mobile.get_company_operating_history_result},
+    "get_valuation_comparison": {"akshare": valuation.get_valuation_comparison_result},
     # prediction_markets
     "get_prediction_markets": {
         "polymarket": get_polymarket_prediction_markets,
@@ -197,7 +217,22 @@ def no_data_available(error: NoMarketDataError) -> str:
     )
 
 
-def route_to_vendor(method: str, *args, **kwargs):
+def route_to_vendor(method: str, *args, **kwargs) -> str:
+    """Legacy text interface; source facts remain available through the result API."""
+    result = route_to_vendor_result(method, *args, **kwargs)
+    return result.content
+
+
+def route_to_vendor_result(method: str, *args, **kwargs) -> SourceResult:
+    result = _route_to_vendor(method, *args, **kwargs)
+    if isinstance(result, SourceResult):
+        return result
+    if not isinstance(result, str):
+        raise TypeError(f"Vendor for {method} must return text or SourceResult")
+    return SourceResult(result)
+
+
+def _route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
     vendor_config = get_vendor(category, method)

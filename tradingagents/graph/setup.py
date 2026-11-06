@@ -1,8 +1,9 @@
 import logging
 from collections import Counter
+from datetime import date, timedelta
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
 
@@ -21,7 +22,14 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.analysts.turn import WRAP_UP
+from tradingagents.agents.evidence import (
+    EVIDENCE_KEYS,
+    PREFETCH_MARKER,
+    collect_tool_evidence,
+    source_coverage,
+)
 from tradingagents.agents.state import AgentState
+from tradingagents.dataflows.symbols import is_a_share
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -50,28 +58,107 @@ def _tools_or_done(state) -> str:
     return "tools" if state["messages"][-1].tool_calls else END
 
 
-def _analyst_graph(spec, agent, max_tool_rounds: int):
+def _required_calls(role, trade_date, *, prefetch_disclosures=True):
+    """Deterministic minimum source set. Identity/date still come from ToolNode state."""
+    day = date.fromisoformat(trade_date)
+    current = {"curr_date": trade_date}
+    disclosures = ("get_company_disclosures", {**current, "look_back_days": 730, "limit": 6})
+    required = {
+        "market": [("get_stock_data", {"start_date": (day - timedelta(days=400)).isoformat(), "end_date": trade_date}),
+                   ("get_verified_market_snapshot", current)],
+        "fundamentals": [("get_fundamentals", current),
+                         *[(name, {**current, "freq": "quarterly"}) for name in
+                           ("get_balance_sheet", "get_cashflow", "get_income_statement")],
+                         disclosures, ("get_dividends", current),
+                         ("get_company_operating_history", current),
+                         ("get_valuation_comparison", {**current, "look_back_years": 3})],
+        "news": [("get_news", {"start_date": (day - timedelta(days=7)).isoformat(), "end_date": trade_date}), disclosures],
+    }
+    calls = required.get(role, [])
+    if not prefetch_disclosures:
+        calls = [(name, args) for name, args in calls if name != 'get_company_disclosures']
+    return [{"name": name, "args": args, "id": f"prefetch:{role}:{index}"}
+            for index, (name, args) in enumerate(calls)]
+
+
+def _analyst_graph(spec, agent, max_tool_rounds: int, *, prefetch_disclosures=True):
     """One analyst as a graph of its own: the model and its tools, on a private message history.
 
-    It returns only its report, so analysts running side by side never write the
-    same key, and its tool calls never reach the other analysts' messages. After
+    It returns its report and role-specific source records, so parallel analysts
+    never write the same key, and its tool calls never reach the other analysts' messages. After
     ``max_tool_rounds`` rounds of tool calls it is told to write its report, and
     that turn ends it whatever it answers, so a model that keeps calling tools
     cannot run the graph into its recursion limit (#1420).
     """
-    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
+    evidence_key = EVIDENCE_KEYS.get(spec.key)
+    fields = {spec.report_key: str}
+    if evidence_key:
+        fields[evidence_key] = dict
+    fields['report_validation'] = dict
+    output = TypedDict(f"{spec.key.capitalize()}Report", fields)
     graph = StateGraph(AgentState, output_schema=output)
-    graph.add_node("agent", agent)
     graph.add_edge(START, "agent")
     if not spec.tools:
+        graph.add_node("agent", agent)
         graph.add_edge("agent", END)
         return graph.compile()
+
+    # Catch source failures as real ToolMessages rather than aborting every analyst.
+    tool_node = ToolNode(list(spec.tools), handle_tool_errors=True)
+    legacy_tool_node = ToolNode(list(spec.tools))
+    tools_by_name = {tool.name: tool for tool in spec.tools}
+
+    def run_tools(state):
+        if not evidence_key or not is_a_share(state["company_of_interest"]):
+            return legacy_tool_node.invoke(state)
+        result = tool_node.invoke(state)
+        requested = {call["id"]: call for call in state["messages"][-1].tool_calls}
+        for message in result["messages"]:
+            call = requested.get(message.tool_call_id, {})
+            tool = tools_by_name.get(call.get("name"))
+            args = dict(call.get("args", {}))
+            if tool is not None:
+                # These fields are injected by the actual ToolNode, never trusted
+                # from the model. Retain them alongside the requested arguments.
+                properties = tool.get_input_schema().model_fields
+                for name in ("ticker", "symbol"):
+                    if name in properties:
+                        args[name] = state["company_of_interest"]
+                if "trade_date" in properties:
+                    args["trade_date"] = state["trade_date"]
+            message.additional_kwargs["source_args"] = args
+        return result
+
+    def analyst_turn(state):
+        messages = list(state["messages"])
+        mainland = evidence_key and is_a_share(state["company_of_interest"])
+        prefetched = []
+        if mainland and not any(m.additional_kwargs.get(PREFETCH_MARKER) for m in messages):
+            request = AIMessage("", tool_calls=_required_calls(
+                spec.key, state["trade_date"], prefetch_disclosures=prefetch_disclosures),
+                                additional_kwargs={PREFETCH_MARKER: True})
+            prefetched = [request, *run_tools({**state, "messages": [*messages, request]})["messages"]]
+            messages.extend(prefetched)
+        private_state = {**state, "messages": messages}
+        if mainland:
+            private_state[evidence_key] = collect_tool_evidence(spec.key, messages)
+        result = agent(private_state)
+        result = {**result, "messages": [*prefetched, *result.get("messages", [])]}
+        if mainland:
+            evidence = collect_tool_evidence(spec.key, [*messages, *result["messages"][len(prefetched):]])
+            result[evidence_key] = evidence
+            if result.get(spec.report_key):
+                result[spec.report_key] += source_coverage(evidence)
+        return result
+
+    graph.add_node("agent", analyst_turn)
 
     def calls(messages):
         return [call["name"] for m in messages for call in (getattr(m, "tool_calls", None) or [])]
 
     def rounds(messages) -> int:
-        return sum(1 for m in messages if getattr(m, "tool_calls", None))
+        return sum(1 for m in messages if getattr(m, "tool_calls", None)
+                   and not m.additional_kwargs.get(PREFETCH_MARKER))
 
     def more_or_wrap_up(state) -> str:
         return "wrap_up" if rounds(state["messages"]) >= max_tool_rounds else "agent"
@@ -80,9 +167,9 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
         repeated = ", ".join(f"{name} x{n}" for name, n in Counter(calls(state["messages"])).most_common())
         logger.warning("%s used its %d tool rounds (%s); asking for its report",
                        spec.agent_node, max_tool_rounds, repeated)
-        return agent({**state, "messages": [*state["messages"], HumanMessage(WRAP_UP)]})
+        return analyst_turn({**state, "messages": [*state["messages"], HumanMessage(WRAP_UP)]})
 
-    graph.add_node("tools", ToolNode(list(spec.tools)))
+    graph.add_node("tools", run_tools)
     graph.add_node("wrap_up", wrap_up)
     graph.add_conditional_edges("agent", _tools_or_done, ["tools", END])
     graph.add_conditional_edges("tools", more_or_wrap_up, ["agent", "wrap_up"])
@@ -121,6 +208,7 @@ class GraphSetup:
                 ``past_context``. It runs alongside the analysts.
         """
         plan = build_analyst_execution_plan(selected_analysts)
+        disclosure_role = 'fundamentals' if any(s.key == 'fundamentals' for s in plan.specs) else 'news'
 
         analyst_factories = {
             "market": lambda: create_market_analyst(self.quick_thinking_llm),
@@ -143,7 +231,8 @@ class GraphSetup:
 
         for spec in plan.specs:
             workflow.add_node(spec.agent_node,
-                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds))
+                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds,
+                                             prefetch_disclosures=spec.key == disclosure_role))
 
         workflow.add_node("Bull Researcher", bull_researcher_node)
         workflow.add_node("Bear Researcher", bear_researcher_node)

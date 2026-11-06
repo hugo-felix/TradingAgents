@@ -70,6 +70,9 @@ _ALIASES = {
 # HKEX codes as Yahoo spells them: the number zero-padded to 4 digits (#957).
 _HK_CODE = re.compile(r"^(\d{1,5})\.HK$")
 _SHANGHAI_SH = re.compile(r"^(\d{6})\.SH$")
+_A_SHARE_STOCK = re.compile(
+    r"^(?:6\d{5}\.SS|(?:00|30)\d{4}\.SZ|(?:(?:43|83|87)\d{4}|920\d{3})\.BJ)$"
+)
 
 
 # Crypto quote currencies that all map to Yahoo's USD pair. Yahoo lists only
@@ -142,6 +145,12 @@ def normalize_symbol(raw: str) -> str:
     if canonical != raw.strip().upper():
         logger.info("Resolved symbol %r to Yahoo symbol %r", raw, canonical)
     return canonical
+
+
+def is_a_share(raw: str) -> bool:
+    """Recognise exchange-qualified mainland stocks, excluding index code ranges."""
+    canonical = normalize_symbol(raw)
+    return isinstance(canonical, str) and _A_SHARE_STOCK.fullmatch(canonical) is not None
 
 
 # Tickers can contain letters, digits, dot, dash, underscore, caret

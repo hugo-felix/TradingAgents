@@ -62,6 +62,10 @@ DATED_TOOLS = [
     tools.get_indicators,
     tools.get_macro_indicators,
     tools.get_verified_market_snapshot,
+    tools.get_company_disclosures,
+    tools.get_dividends,
+    tools.get_company_operating_history,
+    tools.get_valuation_comparison,
 ]
 
 
@@ -75,6 +79,8 @@ INSTRUMENT_TOOLS = [
     tools.get_stock_data, tools.get_indicators, tools.get_verified_market_snapshot,
     tools.get_fundamentals, tools.get_balance_sheet, tools.get_cashflow,
     tools.get_income_statement, tools.get_news, tools.get_insider_transactions,
+    tools.get_company_disclosures, tools.get_dividends,
+    tools.get_company_operating_history, tools.get_valuation_comparison,
 ]
 
 
@@ -104,7 +110,11 @@ def _run(tool, args, module):
     graph.add_node("tools", ToolNode([tool]))
     graph.add_edge(START, "tools")
     graph.add_edge("tools", END)
-    with mock.patch.object(module, "route_to_vendor", return_value="ok") as routed:
+    from tradingagents.dataflows.facts import SourceResult
+
+    with mock.patch.object(module, "route_to_vendor", return_value="ok") as routed, mock.patch.object(
+        module, 'route_to_vendor_result', side_effect=lambda *a, **kw: SourceResult(routed(*a, **kw)),
+    ):
         graph.compile().invoke({
             "messages": [AIMessage("", tool_calls=[{"name": tool.name, "args": args, "id": "1"}])],
             "trade_date": TRADE_DATE,

@@ -242,6 +242,13 @@ def _run_details(final_state: dict, settings: dict | None) -> list[tuple[str, st
         details.append(("Version", escape(f"TradingAgents {s('version', '?')}")))
     if final_state.get("memory_note"):
         details.append(("Memory log", escape(final_state["memory_note"])))
+    if final_state.get('report_validation'):
+        checks = final_state['report_validation']
+        failed = sum(entry.get('status') == 'failed' for entry in checks.values())
+        passed = sum(entry.get('status') == 'passed' for entry in checks.values())
+        skipped = sum(entry.get('status') == 'skipped' for entry in checks.values())
+        details.append(('Fact contract checks', escape(
+            f'{passed} passed, {failed} failed, {skipped} skipped; references/value display/known qualifications, not economic correctness.')))
     return details
 
 

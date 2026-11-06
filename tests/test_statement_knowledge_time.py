@@ -55,6 +55,8 @@ def test_statements_come_from_sec_edgar_first_by_default():
     served = []
     chain = {name: (lambda *a, _n=name, **k: served.append(_n) or f"{_n} statements")
              for name in router.VENDOR_METHODS["get_balance_sheet"]}
+    # The A-share adapter rejects AAPL before importing its optional SDK.
+    chain["akshare"] = router.VENDOR_METHODS["get_balance_sheet"]["akshare"]
     with mock.patch.dict(router.VENDOR_METHODS, {"get_balance_sheet": chain}):
         router.route_to_vendor("get_balance_sheet", "AAPL", "quarterly", PAST)
     assert served == ["sec_edgar"]

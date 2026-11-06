@@ -161,6 +161,7 @@ class TradingAgentsGraph:
             # before the Memory Log step would resume without the lessons.
             "analysts=parallel",
             "memory=parallel",
+            "source_evidence=v6-compact-grounded-reports",
             f"settings={digest}",
         ])
 
@@ -270,6 +271,9 @@ class TradingAgentsGraph:
             "max_debate_rounds": cfg.get("max_debate_rounds"),
             "max_risk_discuss_rounds": cfg.get("max_risk_discuss_rounds"),
             "output_language": cfg.get("output_language"),
+            "a_share_discussions_enabled": cfg.get("a_share_discussions_enabled", True),
+            "a_share_valuation_cross_check": cfg.get("a_share_valuation_cross_check", False),
+            "glm_reasoning_effort": cfg.get("glm_reasoning_effort"),
             "data_vendors": dict(cfg.get("data_vendors") or {}),
             "tool_vendors": dict(cfg.get("tool_vendors") or {}),
         }
@@ -444,6 +448,12 @@ class TradingAgentsGraph:
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],
             "fundamentals_report": final_state["fundamentals_report"],
+            "market_evidence": final_state.get("market_evidence", {}),
+            "fundamentals_evidence": final_state.get("fundamentals_evidence", {}),
+            "news_evidence": final_state.get("news_evidence", {}),
+            "sentiment_evidence": final_state.get("sentiment_evidence", {}),
+            "report_contract_version": final_state.get("report_contract_version"),
+            "report_validation": final_state.get("report_validation", {}),
             "investment_debate_state": {
                 "bull_history": final_state["investment_debate_state"]["bull_history"],
                 "bear_history": final_state["investment_debate_state"]["bear_history"],

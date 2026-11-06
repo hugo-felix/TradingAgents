@@ -11,11 +11,14 @@ claim. Deterministic, no LLM involved.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from decimal import Decimal
 
 import pandas as pd
 from stockstats import wrap
 
 from tradingagents.dataflows.errors import NoMarketDataError
+from tradingagents.dataflows.facts import Fact, SourceResult
+from tradingagents.dataflows.market_session import completed_daily_bars, daily_bar_note
 from tradingagents.dataflows.symbols import normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import price_text
 from tradingagents.dataflows.vendors.yahoo.ohlcv import load_ohlcv
@@ -41,7 +44,7 @@ def _verified_rows(symbol: str, as_of_date: str) -> pd.DataFrame:
     if data is None or data.empty:
         raise NoMarketDataError(symbol, normalize_symbol(symbol), "no price rows")
 
-    df = data.copy()
+    df = completed_daily_bars(data, symbol, as_of_date).copy()
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
     df = df.dropna(subset=["Date"])
     df = df[df["Date"] <= pd.to_datetime(as_of_date)].sort_values("Date")
@@ -64,12 +67,12 @@ def _fmt(value) -> str:
     return str(value)
 
 
-def build_verified_market_snapshot(
+def build_verified_market_snapshot_result(
     symbol: str,
     as_of_date: str,
     look_back_days: int = 30,
     indicators: Iterable[str] | None = None,
-) -> str:
+) -> SourceResult:
     """Render a ground-truth snapshot: latest OHLCV row, indicators, recent closes."""
     # `df` keeps the original capitalized OHLCV columns (Open/High/Low/Close/
     # Volume); stockstats `wrap()` lowercases columns and adds indicator
@@ -77,13 +80,40 @@ def build_verified_market_snapshot(
     df = _verified_rows(symbol, as_of_date)
     stock_df = wrap(df.copy())
 
-    selected = tuple(indicators or DEFAULT_SNAPSHOT_INDICATORS)
+    facts = []
+    canonical = normalize_symbol(symbol)
+    price_currency = 'CNY' if canonical.endswith(('.SS', '.SZ', '.BJ')) else 'HKD' if canonical.endswith('.HK') else None
+    source_url = f'https://finance.yahoo.com/quote/{normalize_symbol(symbol)}/history/'
+    qualifiers = ('auto_adjust=True; adjusted OHLC prices, not unadjusted execution prices',
+                  'Completed daily bars only; no invented trading positions')
+
+    def measurement(key, label, value, unit, period, basis):
+        missing = value is None or pd.isna(value)
+        fact = Fact(key=f'yahoo:{normalize_symbol(symbol)}:{key}', label=label,
+                    value=None if missing else Decimal(str(value)), unit=unit, period=period,
+                    basis=basis, currency=price_currency if unit == 'price' else None, status='missing' if missing else 'available',
+                    qualifiers=qualifiers, source_url=source_url)
+        facts.append(fact)
+        return fact
+
+    def display(fact, original):
+        if fact.value is None:
+            return 'N/A'
+        return _fmt(float(fact.value)) if isinstance(original, float) else format(fact.value, 'f')
+
+    selected = tuple(dict.fromkeys(indicators or DEFAULT_SNAPSHOT_INDICATORS))
     indicator_values: dict[str, str] = {}
     for name in selected:
         try:
             stock_df[name]  # triggers stockstats calculation
-            indicator_values[name] = _fmt(stock_df.iloc[-1][name])
+            value = stock_df.iloc[-1][name]
+            fact = measurement(f'{df.iloc[-1]["Date"]:%Y-%m-%d}:indicator:{name}', name, value,
+                        'index points' if name == 'rsi' else 'price',
+                        f'{df.iloc[-1]["Date"]:%Y-%m-%d}', 'stockstats technical indicator')
+            indicator_values[name] = display(fact, value)
         except Exception as exc:  # noqa: BLE001 — one bad indicator shouldn't sink the snapshot
+            measurement(f'{df.iloc[-1]["Date"]:%Y-%m-%d}:indicator:{name}', name, None,
+                        'indicator', f'{df.iloc[-1]["Date"]:%Y-%m-%d}', 'stockstats technical indicator')
             indicator_values[name] = f"N/A ({type(exc).__name__})"
 
     latest = df.iloc[-1]
@@ -96,6 +126,7 @@ def build_verified_market_snapshot(
         "",
         f"- Requested analysis date: {as_of_date}",
         f"- Latest trading row used: {latest_date}",
+        daily_bar_note(df).strip(),
         "- Rows after the requested analysis date are excluded before verification.",
         "",
         "### Latest verified OHLCV row",
@@ -104,7 +135,9 @@ def build_verified_market_snapshot(
         "|---|---:|",
     ]
     for field in ("Open", "High", "Low", "Close", "Volume"):
-        lines.append(f"| {field} | {_fmt(latest.get(field))} |")
+        fact = measurement(f'{latest_date}:ohlcv:{field}', field, latest.get(field),
+                           'source volume units' if field == 'Volume' else 'price', latest_date, 'latest OHLCV')
+        lines.append(f"| {field} | {display(fact, latest.get(field))} |")
 
     lines += ["", "### Verified technical indicators (latest row)", "",
               "| Indicator | Value |", "|---|---:|"]
@@ -114,7 +147,20 @@ def build_verified_market_snapshot(
     lines += ["", f"### Recent verified closes (last {len(recent)} rows)", "",
               "| Date | Close |", "|---|---:|"]
     for _, row in recent.iterrows():
-        lines.append(f"| {_fmt(row['Date'])} | {_fmt(row.get('Close'))} |")
+        day = _fmt(row['Date'])
+        fact = measurement(f'{day}:recent_close', 'Close', row.get('Close'), 'price', day, 'daily close')
+        lines.append(f"| {day} | {display(fact, row.get('Close'))} |")
+
+    volumes = df.tail(8)
+    for _, row in volumes.iterrows():
+        day = _fmt(row['Date'])
+        measurement(f'{day}:recent_volume', 'Volume', row.get('Volume'), 'source volume units', day, 'daily volume')
+    preceding = pd.to_numeric(volumes.iloc[:-1]['Volume'], errors='coerce').dropna()
+    if len(preceding) and preceding.mean() > 0 and pd.notna(latest.get('Volume')):
+        measurement(f'{latest_date}:volume_ratio', 'Volume comparison',
+                    Decimal(str(latest['Volume'])) / (sum(Decimal(str(v)) for v in preceding) / len(preceding)),
+                    'ratio', latest_date,
+                    f'latest volume / preceding {len(preceding)} available sessions mean')
 
     lines += [
         "",
@@ -125,4 +171,9 @@ def build_verified_market_snapshot(
         "percentage moves unless directly supported by tool output with concrete "
         "dates and prices.",
     ]
-    return "\n".join(lines)
+    return SourceResult("\n".join(lines), tuple(facts))
+
+
+def build_verified_market_snapshot(symbol: str, as_of_date: str, look_back_days: int = 30,
+                                   indicators: Iterable[str] | None = None) -> str:
+    return build_verified_market_snapshot_result(symbol, as_of_date, look_back_days, indicators).content

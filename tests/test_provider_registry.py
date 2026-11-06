@@ -7,6 +7,7 @@ import pytest
 from tradingagents.llm_clients.openai_client import (
     OPENAI_COMPATIBLE_PROVIDERS,
     DeepSeekChatOpenAI,
+    GLMChatOpenAI,
     LocalCompatibleChatOpenAI,
     MinimaxChatOpenAI,
     NormalizedChatOpenAI,
@@ -31,8 +32,8 @@ def test_registry_membership():
     ("deepseek", "https://api.deepseek.com", DeepSeekChatOpenAI, False),
     ("qwen", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", NormalizedChatOpenAI, False),
     ("qwen-cn", "https://dashscope.aliyuncs.com/compatible-mode/v1", NormalizedChatOpenAI, False),
-    ("glm", "https://api.z.ai/api/paas/v4/", NormalizedChatOpenAI, False),
-    ("glm-cn", "https://open.bigmodel.cn/api/paas/v4/", NormalizedChatOpenAI, False),
+    ("glm", "https://api.z.ai/api/paas/v4/", GLMChatOpenAI, False),
+    ("glm-cn", "https://open.bigmodel.cn/api/paas/v4/", GLMChatOpenAI, False),
     ("minimax", "https://api.minimax.io/v1", MinimaxChatOpenAI, False),
     ("minimax-cn", "https://api.minimaxi.com/v1", MinimaxChatOpenAI, False),
     ("openrouter", "https://openrouter.ai/api/v1", NormalizedChatOpenAI, False),

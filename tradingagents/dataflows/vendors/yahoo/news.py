@@ -1,7 +1,9 @@
 """yfinance-based news data fetching functions."""
 
 import contextlib
+import re
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 
 import yfinance as yf
 from dateutil.relativedelta import relativedelta
@@ -9,7 +11,7 @@ from dateutil.relativedelta import relativedelta
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.date_window import coverage_gap, in_window
 from tradingagents.dataflows.errors import VendorUnavailableError
-from tradingagents.dataflows.symbols import normalize_symbol
+from tradingagents.dataflows.symbols import is_a_share, normalize_symbol
 from tradingagents.dataflows.vendors.yahoo.common import yf_retry
 
 
@@ -54,6 +56,32 @@ def _extract_article_data(article: dict) -> dict:
     }
 
 
+def _related_tickers(article: dict) -> set[str]:
+    """Read explicit issuer tags from either Yahoo article shape."""
+    content = article.get("content")
+    nested = content if isinstance(content, dict) else {}
+    tags = (article.get("relatedTickers") or []) + (nested.get("relatedTickers") or [])
+    return {normalize_symbol(tag) for tag in tags if isinstance(tag, str)}
+
+
+def _is_relevant(article: dict, canonical: str) -> bool:
+    tags = _related_tickers(article)
+    if canonical in tags:
+        return True
+    if is_a_share(canonical):
+        # Mainland quote feeds can be generic world news. Require an explicit
+        # tag or the listing's code in the headline; a summary's industry list
+        # mentioning the issuer does not make it company news. No extra identity
+        # lookup is needed, at the cost of missing untagged, name-only headlines.
+        code, exchange = canonical.split(".")
+        suffix = "SS|SH" if exchange == "SS" else exchange
+        title = _extract_article_data(article)["title"]
+        return bool(re.search(rf"(?<![A-Z0-9]){code}(?:\.(?:{suffix}))?(?![A-Z0-9.])", title, re.I))
+    # Preserve the established overseas quote-feed contract when no tags are
+    # supplied, while rejecting an explicit tag pointing only to other issuers.
+    return not tags
+
+
 def _search_news(canonical: str, limit: int) -> tuple[list, bool]:
     """Yahoo search's articles tagged with ``canonical``, and whether it knows the symbol.
 
@@ -66,7 +94,7 @@ def _search_news(canonical: str, limit: int) -> tuple[list, bool]:
         return [], False
     tagged = [
         a for a in (search.news or [])
-        if canonical in (t.upper() for t in a.get("relatedTickers") or [])
+        if canonical in _related_tickers(a)
     ]
     knows = any((q.get("symbol") or "").upper() == canonical for q in search.quotes or [])
     return tagged, knows or bool(search.news)
@@ -91,7 +119,7 @@ def get_news_yfinance(
 ) -> str:
     """News about ``ticker`` published in the window, from Yahoo Finance.
 
-    The symbol's quote feed comes first. When it is empty, Yahoo search serves
+    The symbol's relevant quote feed comes first. When it is empty, Yahoo search serves
     the articles tagged with the symbol; when it has none, or neither answers,
     Yahoo news is unavailable, which is not an absence of news, and a configured
     next vendor is tried. Search results are a sample, so finding none in the
@@ -105,8 +133,9 @@ def get_news_yfinance(
     resolved = "" if canonical == ticker else f" (resolved to {canonical})"
     subject = f"news for {ticker}{resolved}"
     feed = yf_retry(lambda: yf.Ticker(canonical).get_news(count=article_limit)) or []
-    articles = [_extract_article_data(a) for a in feed]
-    if not feed:
+    relevant = [a for a in feed if _is_relevant(a, canonical)]
+    articles = [_extract_article_data(a) for a in relevant]
+    if not relevant:
         found, answered = _search_news(canonical, article_limit)
         if not answered:
             raise VendorUnavailableError(f"Yahoo Finance returned no news response for {canonical}")
@@ -118,12 +147,22 @@ def get_news_yfinance(
 
     start_dt = datetime.strptime(start_date, "%Y-%m-%d")
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    if is_a_share(canonical):
+        # A-share analysis dates are exchange-local calendar dates, matching
+        # the mainland vendor; in_window converts these bounds to UTC.
+        start_dt = start_dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        end_dt = end_dt.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
     # Keep only articles within the requested window (look-ahead safe).
     in_range = [a for a in articles if in_window(a["pub_date"], start_dt, end_dt)]
     if in_range:
         return f"## {ticker}{resolved} News, from {start_date} to {end_date}:\n\n{_format_articles(in_range)}"
 
-    if not feed:
+    if is_a_share(canonical) or (relevant and len(relevant) != len(feed)):
+        # A sparse relevance-filtered feed cannot establish absence of events.
+        raise VendorUnavailableError(
+            f"Yahoo Finance has no valid company news for {canonical} in {start_date}..{end_date}"
+        )
+    if not relevant:
         return (f"<Yahoo Finance news unavailable for {start_date}..{end_date}: Yahoo search "
                 f"returns only a sample of recent articles about {canonical}, so this is not "
                 f"an absence of {subject}>")

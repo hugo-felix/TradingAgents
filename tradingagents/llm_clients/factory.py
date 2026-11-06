@@ -106,6 +106,11 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort
 
+    elif provider in ("glm", "glm-cn"):
+        reasoning_effort = config.get("glm_reasoning_effort")
+        if reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort
+
     elif provider == "anthropic":
         effort = config.get("anthropic_effort")
         if effort:
