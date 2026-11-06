@@ -63,6 +63,19 @@ def extract_rating(text: str) -> str | None:
     if not text:
         return None
     norm = unicodedata.normalize("NFKC", text)
+    # Only canonical values on an explicit Chinese rating line participate.
+    # Prose such as “不建议卖出” never becomes an executable direction.
+    from tradingagents.report_language import RATING_ZH
+    canonical = {value: key for key, value in RATING_ZH.items()}
+    listed = re.findall(r'(?m)^[ \t]*(?:[-+*•]|\d+[.)])[ \t]+(?:\*\*)?评级(?:\*\*)?[ \t]*[:：][ \t]*(买入|增配|持有|减配|卖出)', norm)
+    own_label = re.search(r'(?m)^[ \t]*(?:\*\*)?(?:最终评级|配置评级|投资评级|评级)(?:\*\*)?[ \t]*[:：]', norm)
+    if len(set(listed)) > 1 and not own_label and not _RATING_LINE_RE.match(norm):
+        return None
+    norm = re.sub(
+        r'(?m)^(\s*(?:(?:[-+*•]|\d+[.)])\s+)?[\s*_#]*)(?:最终评级|配置评级|投资评级|评级)'
+        r'[\s*]*[:：][\s*]*(买入|增配|持有|减配|卖出|需复核)(?![\u4e00-\u9fff])',
+        lambda m: m[1] + 'Rating: ' + canonical[m[2]], norm,
+    )
 
     # The decision is asked to open with its rating, so a first line (after any
     # headings) in that shape is the call. A list item there may also be a quote

@@ -183,3 +183,33 @@ def test_news_coverage_gap_does_not_call_an_unselected_vendor(monkeypatch):
         out = router.route_to_vendor('get_news', '600941.SS', '2026-10-29', TODAY)
     assert out.startswith('DATA_UNAVAILABLE:') and 'not an absence' in out
     fallback.assert_not_called()
+
+
+def test_event_candidates_keep_older_preannouncement_before_article_limit(monkeypatch):
+    rows = [news_row(f'中国移动普通近闻{i}', '2026-11-05 10:00:00') for i in range(20)]
+    rows += [news_row('中国移动将举行移动网络大会', '2026-10-27 10:21:51', '11月5日至7日举行大会，计划发布战略。'),
+             news_row('中国移动次日演讲', '2026-11-06 10:52:28', '大会公布新的算力计划')]
+    news_fetch(monkeypatch, rows)
+    with run_config({'news_article_limit': 2}):
+        out = akshare.get_event_candidates('600941.SS', TODAY)
+    assert '将举行移动网络大会' in out and '11月5日至7日' in out
+    assert '次日演讲' not in out and '普通近闻' not in out
+    assert 'candidate' in out.lower() and 'not a complete' in out.lower()
+    assert '2026-10-27' in out
+
+
+def test_event_candidates_do_not_turn_empty_coverage_into_no_catalysts(monkeypatch):
+    news_fetch(monkeypatch, [news_row('中国移动普通近闻', '2026-11-05')])
+    with pytest.raises(VendorUnavailableError, match='not an absence'):
+        akshare.get_event_candidates('600941.SS', TODAY)
+
+
+def test_event_tool_is_deterministically_prefetched_and_date_capped(monkeypatch):
+    from tradingagents.agents import tools
+    from tradingagents.graph.setup import _required_calls
+    calls = _required_calls('news', TODAY)
+    assert any(call['name'] == 'get_event_candidates' for call in calls)
+    seen = []
+    monkeypatch.setattr(tools, 'route_to_vendor', lambda *args: seen.append(args) or 'candidate source')
+    tools.get_event_candidates.invoke({'ticker': '600941.SS', 'curr_date': '2026-11-06', 'trade_date': TODAY})
+    assert seen == [('get_event_candidates', '600941.SS', TODAY)]

@@ -5,11 +5,14 @@ cannot prove economic reasoning, accounting recognition or investment merit.
 """
 import html
 import json
+import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tradingagents.agents.decision import DECISION_DISCIPLINE, DecisionPlan, render_decision_plan
 from tradingagents.agents.evidence import EVIDENCE_KEYS, render_source_records
 from tradingagents.agents.rating import RATING_REVIEW, RATINGS_5_TIER
 from tradingagents.dataflows.facts import Fact, render_facts
@@ -32,6 +35,7 @@ class GroundedReport(BaseModel):
     summary: str = Field(min_length=1)
     points: list[GroundedPoint] = Field(min_length=1, max_length=8)
     rating: Rating | None = None
+    decision_plan: DecisionPlan | None = None
 
 
 @dataclass(frozen=True)
@@ -94,7 +98,13 @@ def _ratings(allowed_ratings):
         raise ValueError('allowed_ratings contains unsupported rating')
 
 
-def grounding_instruction(evidence, allowed_ratings: tuple[str, ...] = ()) -> str:
+def _language_instruction():
+    # Lazy import avoids the shared context -> evidence -> grounding cycle.
+    from tradingagents.agents.context import get_language_instruction
+    return get_language_instruction()
+
+
+def grounding_instruction(evidence, allowed_ratings: tuple[str, ...] = (), *, require_decision_plan=False, verify_measurements=False) -> str:
     _ratings(allowed_ratings)
     facts = facts_from_evidence(evidence)
     sources = {sid: {'status': row.get('status'), 'usable': _usable(row)} for sid, row in evidence.items()}
@@ -115,12 +125,22 @@ def grounding_instruction(evidence, allowed_ratings: tuple[str, ...] = ()) -> st
         ('A rating is required, chosen exactly from ' + repr(allowed_ratings) +
          '; REVIEW is the insufficient-evidence outcome. Any other rating requires an available '
          'fact reference in an analysis point.' if allowed_ratings else 'Omit rating (analyst report).'),
+        ('decision_plan is required for a non-REVIEW final allocation. Fill every field explicitly. '
+         'Use conditional or wait when execution evidence is insufficient. A rating is not an order. '
+         'Include source/fact references for triggers, contrary evidence and event dates. '
+         'Mark unknown coverage explicitly; never fabricate a plan.' if require_decision_plan else
+         'Omit decision_plan; only the final portfolio manager supplies it.'),
+        DECISION_DISCIPLINE,
+        _language_instruction(),
+        ('Measurement check: prose measurements with recognized units must match an available referenced fact '
+         'value AND unit exactly; do not rescale or convert values. Prefer fact IDs and the code-rendered appendix. '
+         'Unknown units, economic reasoning and unlabeled numbers are not machine-verified.' if verify_measurements else ''),
         'Known sources: ' + json.dumps(sources, ensure_ascii=False),
         'Canonical source facts:\n' + _table(facts),
     ])
 
 
-def validate_grounded_report(payload, evidence, allowed_ratings: tuple[str, ...] = ()) -> GroundedReport:
+def validate_grounded_report(payload, evidence, allowed_ratings: tuple[str, ...] = (), *, require_decision_plan=False, verify_measurements=False) -> GroundedReport:
     _ratings(allowed_ratings)
     facts = facts_from_evidence(evidence)
     try:
@@ -135,6 +155,8 @@ def validate_grounded_report(payload, evidence, allowed_ratings: tuple[str, ...]
     for location, text in [('summary', report.summary)] + [(f'points[{i}].text', p.text) for i, p in enumerate(report.points)]:
         if not text.strip():
             issues.append(f'{location}: qualitative text cannot be blank')
+    if require_decision_plan and report.rating != 'REVIEW' and report.decision_plan is None:
+        issues.append('decision_plan required for final allocation')
     available_analysis = False
     for i, point in enumerate(report.points):
         refs = point.fact_ids + point.counter_fact_ids
@@ -162,9 +184,46 @@ def validate_grounded_report(payload, evidence, allowed_ratings: tuple[str, ...]
             issues.append('Non-REVIEW rating requires an available fact reference in an analysis point')
     elif report.rating is not None:
         issues.append('Analyst report must omit rating')
+    if report.decision_plan:
+        plan = report.decision_plan
+        if require_decision_plan and report.rating != 'REVIEW' and not (plan.fact_ids or plan.source_ids):
+            issues.append('decision_plan requires original fact/source references')
+        for ref in plan.fact_ids:
+            if ref not in facts or facts[ref].status != 'available':
+                issues.append(f'decision_plan: unknown or unavailable fact ID {ref}')
+        for ref in plan.source_ids:
+            if ref not in evidence or not _usable(evidence[ref]):
+                issues.append(f'decision_plan: unknown or unusable source ID {ref}')
+        if verify_measurements:
+            for key in ('execution_conditions', 'counterevidence', 'benchmark_context', 'catalysts'):
+                issues.extend(_measurement_issues(getattr(plan, key), plan.fact_ids, facts, f'decision_plan.{key}'))
+    if verify_measurements:
+        all_refs = [ref for point in report.points for ref in point.fact_ids + point.counter_fact_ids]
+        issues.extend(_measurement_issues(report.summary, all_refs, facts, 'summary'))
+        for index, point in enumerate(report.points):
+            issues.extend(_measurement_issues(point.text, point.fact_ids + point.counter_fact_ids,
+                                              facts, f'points[{index}]'))
     if issues:
         raise ValueError('; '.join(issues))
     return report
+
+
+_MEASUREMENT = re.compile(r'(?<![\w.])([+\-−－]?\d+(?:,\d{3})*(?:\.\d+)?)\s*'
+                          r'(亿元|万元|万户|亿户|万股|亿股|元|户|股|倍|％|%|百分点|pp\b|CNY\b|RMB\b|USD\b)', re.I)
+_UNIT_ALIASES = {'％': '%', '百分点': 'pp', 'percentage points': 'pp', 'RMB': 'CNY', '元': 'CNY'}
+
+
+def _measurement_issues(text, refs, facts, location):
+    available = [facts[ref] for ref in refs if ref in facts and facts[ref].status == 'available']
+    issues = []
+    # Chinese prose need not separate a numeral with whitespace; only avoid
+    # consuming the numeric tail of an identifier or a longer decimal.
+    for match in _MEASUREMENT.finditer(' ' + re.sub(r'(?<=[\u4e00-\u9fff])(?=[+\-−－]?\d)', ' ', text)):
+        value = Decimal(match[1].replace(',', '').replace('−', '-').replace('－', '-'))
+        unit = _UNIT_ALIASES.get(match[2], match[2])
+        if not any(fact.value == value and _UNIT_ALIASES.get(fact.unit, fact.unit) == unit for fact in available):
+            issues.append(f'{location}: measurement value/unit does not match an available referenced fact: {match[0].strip()}')
+    return issues
 
 
 def render_grounded_report(report, evidence) -> str:
@@ -183,6 +242,11 @@ def render_grounded_report(report, evidence) -> str:
         lines.append(f'\n- {label}：{_cell(point.text)} [引用：{_cell(", ".join(refs))}]')
         if point.counter_fact_ids:
             lines.append('  反向证据：' + _cell(', '.join(point.counter_fact_ids)))
+    if report.decision_plan is not None:
+        lines.append('\n' + render_decision_plan(report.decision_plan))
+        refs = report.decision_plan.fact_ids + report.decision_plan.source_ids
+        if refs:
+            lines.append('\n计划依据：' + _cell(', '.join(refs)))
     lines.append('\n来源数值、口径与限定条件见最终报告的来源事实附录；分析推断未作语义验证。')
     return '\n'.join(lines)
 
@@ -200,15 +264,15 @@ def _failed(issues, required, repaired):
     return GroundingResult(content, 'failed', issues, rating, repaired)
 
 
-def finish_grounded_report(llm, draft, evidence, allowed_ratings: tuple[str, ...] = (), *, task_context: str = "") -> GroundingResult:
+def finish_grounded_report(llm, draft, evidence, allowed_ratings: tuple[str, ...] = (), *, task_context: str = "", require_decision_plan=False, verify_measurements=False) -> GroundingResult:
     """Validate, attempt at most one repair, then publish a failure notice on failure."""
     try:
-        report = validate_grounded_report(draft, evidence, allowed_ratings)
+        report = validate_grounded_report(draft, evidence, allowed_ratings, require_decision_plan=require_decision_plan, verify_measurements=verify_measurements)
         return GroundingResult(render_grounded_report(report, evidence), 'passed', rating=report.rating)
     except ValueError as exc:
         issues = [str(exc)]
     try:
-        instruction = grounding_instruction(evidence, allowed_ratings)
+        instruction = grounding_instruction(evidence, allowed_ratings, require_decision_plan=require_decision_plan, verify_measurements=verify_measurements)
     except ValueError as exc:
         return _failed(issues + [str(exc)], bool(allowed_ratings), False)
     try:
@@ -219,20 +283,20 @@ def finish_grounded_report(llm, draft, evidence, allowed_ratings: tuple[str, ...
                   + '\n' + instruction + '\nMachine issues:\n' + json.dumps(issues, ensure_ascii=False)
                   + '\nOriginal draft:\n' + (draft if isinstance(draft, str) else str(draft)))
         repaired = _content(llm.invoke(prompt))
-        report = validate_grounded_report(repaired, evidence, allowed_ratings)
+        report = validate_grounded_report(repaired, evidence, allowed_ratings, require_decision_plan=require_decision_plan, verify_measurements=verify_measurements)
         return GroundingResult(render_grounded_report(report, evidence), 'passed', issues, report.rating, True)
     except Exception as exc:
         return _failed(issues + [str(exc)], bool(allowed_ratings), True)
 
 
-def invoke_grounded_report(llm, prompt, evidence, allowed_ratings: tuple[str, ...] = ()) -> GroundingResult:
+def invoke_grounded_report(llm, prompt, evidence, allowed_ratings: tuple[str, ...] = (), *, require_decision_plan=False, verify_measurements=True) -> GroundingResult:
     """One initial generation plus, if necessary, one repair attempt."""
     try:
-        instruction = grounding_instruction(evidence, allowed_ratings)
+        instruction = grounding_instruction(evidence, allowed_ratings, require_decision_plan=require_decision_plan, verify_measurements=verify_measurements)
         draft = _content(llm.invoke(prompt + '\n\n' + render_source_records(evidence) + '\n\n' + instruction))
     except Exception as exc:
         return _failed([str(exc)], bool(allowed_ratings), False)
-    return finish_grounded_report(llm, draft, evidence, allowed_ratings, task_context=prompt)
+    return finish_grounded_report(llm, draft, evidence, allowed_ratings, task_context=prompt, require_decision_plan=require_decision_plan, verify_measurements=verify_measurements)
 
 
 def evidence_from_state(state) -> dict:

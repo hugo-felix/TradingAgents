@@ -53,6 +53,13 @@ def test_available_source_reaches_portfolio_prompt():
     }}
     llm = MagicMock()
     llm.invoke.return_value.content = json.dumps({
+        'decision_plan': {
+            'allocation_horizon': 'Review next quarter', 'execution_mode': 'wait',
+            'execution_conditions': 'Await confirmation; no immediate order',
+            'valid_until': 'Next disclosure', 'invalidation_conditions': 'New contrary evidence',
+            'counterevidence': 'Insufficient operating context', 'catalysts': 'Calendar coverage unknown',
+            'benchmark_context': 'Benchmark unavailable', 'fact_ids': ['market:snapshot:1#close'],
+        },
         'summary': '证据尚待权衡', 'rating': 'Hold', 'points': [
             {'kind': 'analysis', 'text': '价格仍需结合经营判断', 'fact_ids': ['market:snapshot:1#close']}],
     })

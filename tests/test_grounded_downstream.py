@@ -27,6 +27,15 @@ class Model:
         self.calls.append(prompt)
         raw = {'summary': '经营变化仍需关注', 'points': [
             {'kind': 'analysis', 'text': '变化可能影响经营', 'fact_ids': ['filing#net']}]}
+        if 'decision_plan is required for a non-REVIEW' in prompt:
+            raw['decision_plan'] = {
+                'fact_ids': ['filing#net'],
+                'allocation_horizon': 'One quarter, review on disclosure', 'execution_mode': 'wait',
+                'execution_conditions': 'No immediate action; await confirmation.',
+                'valid_until': 'Review at next disclosure', 'invalidation_conditions': 'Contrary operating evidence',
+                'counterevidence': 'Cash flow buffer requires weighing', 'catalysts': 'Calendar coverage insufficient',
+                'benchmark_context': 'Same-date benchmark unavailable',
+            }
         if self.rating:
             raw['rating'] = self.rating
         return SimpleNamespace(content=json.dumps(raw, ensure_ascii=False) if self.valid else 'INVALID DRAFT')

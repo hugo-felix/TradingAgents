@@ -43,7 +43,7 @@ def test_prose_naming_several_ratings_without_a_label_needs_review():
 @pytest.mark.unit
 @pytest.mark.parametrize("prose", [
     "We would not Sell here; the dip is a chance to add.",
-    "**评级**：买入\n\n不建议卖出 (Sell)。",   # a label in another language, and a negated Sell
+    "讨论买入，但不建议卖出 (Sell)。",   # Chinese prose without an explicit rating label
     "On balance we stay Underweight until margins recover.",
 ])
 def test_a_rating_word_without_a_label_is_not_read_as_the_call(prose):

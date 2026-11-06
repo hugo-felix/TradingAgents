@@ -22,13 +22,13 @@ def report_instruction(state) -> str:
     """A versioned run separates model interpretation from code-rendered facts."""
     if not grounded_run_enabled(state):
         return '\n Make sure to append a Markdown table at the end of the report to organize key points clearly.'
-    return '\n\n' + grounding_instruction(evidence_from_state(state))
+    return '\n\n' + grounding_instruction(evidence_from_state(state), verify_measurements=True)
 
 
 def finish_analyst_turn(state, llm, message, report, role, *, task_context=""):
     if message.tool_calls or not grounded_run_enabled(state):
         return message, report, {}
-    result = finish_grounded_report(llm, report, evidence_from_state(state), task_context=task_context)
+    result = finish_grounded_report(llm, report, evidence_from_state(state), task_context=task_context, verify_measurements=True)
     published = AIMessage(content=result.content, id=message.id)
     return published, result.content, validation_update(role, result)
 

@@ -4,6 +4,7 @@ from tradingagents.agents.analysts.turn import finish_analyst_turn, report_instr
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
 from tradingagents.agents.tools import (
     get_company_disclosures,
+    get_event_candidates,
     get_global_news,
     get_macro_indicators,
     get_news,
@@ -14,6 +15,7 @@ from tradingagents.dataflows.symbols import is_a_share
 # The tools this analyst is offered; its tool node is built from the same tuple.
 TOOLS = (
     get_news,
+    get_event_candidates,
     get_global_news,
     get_macro_indicators,
     get_prediction_markets,
@@ -28,7 +30,7 @@ def create_news_analyst(llm):
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state, include_evidence=False)
         mainland = is_a_share(state["company_of_interest"])
-        available_tools = TOOLS if mainland else tuple(t for t in TOOLS if t is not get_company_disclosures)
+        available_tools = TOOLS if mainland else tuple(t for t in TOOLS if t not in (get_company_disclosures, get_event_candidates))
 
         system_message = (
             f"You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(start_date, end_date) for news about the {asset_label} under analysis, get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news, get_macro_indicators(indicator, curr_date, look_back_days) to ground macro commentary in actual data from FRED (e.g. 'cpi', 'core_pce', 'unemployment', 'fed_funds_rate', '10y_treasury', 'yield_curve'), and get_prediction_markets(topic, limit) for live market-implied probabilities of forward-looking events (e.g. 'Fed rate cut', 'recession 2026', geopolitical or sector events). Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
@@ -49,6 +51,14 @@ def create_news_analyst(llm):
         )
         if mainland:
             system_message += (
+                " Use get_event_candidates(curr_date) or its prefetched result to inspect older preannouncements."
+                " Build an explicit ongoing/upcoming event window for the next 14 calendar days, retaining"
+                " relevant later events for the allocation horizon. Cite each source and separate publication"
+                " date from event date. Date-ambiguous or past events are not confirmed upcoming catalysts."
+                " No candidates, failed requests or a sparse recent sample mean incomplete calendar coverage,"
+                " not no catalysts. Never use news published after the analysis date."
+                " Procurement is not evidence of current-period expense recognition: distinguish investment,"
+                " future growth expectations and realized revenue; examine both interpretations."
                 " Prefer results already supplied for this ticker, date and range. Use supplied official"
                 " disclosure results when available. Do not fetch a broad announcement review merely to"
                 " duplicate the Fundamentals Analyst. Call get_company_disclosures only to verify a specific"

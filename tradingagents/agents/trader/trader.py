@@ -9,6 +9,7 @@ from tradingagents.agents.context import (
     get_language_instruction,
     get_portfolio_context_from_state,
 )
+from tradingagents.agents.decision import DECISION_DISCIPLINE
 from tradingagents.agents.grounding import (
     evidence_from_state,
     grounded_run_enabled,
@@ -54,6 +55,7 @@ def create_trader(llm):
             f"{instrument_context}\n\n"
             f"{report_section}"
             f"{portfolio_context}\n\n"
+            f"{DECISION_DISCIPLINE}\n\n"
             f"Proposed Investment Plan:\n{investment_plan}\n\n"
             "Make an informed, strategic trading decision.\n\n"
         )

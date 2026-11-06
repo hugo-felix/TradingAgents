@@ -1,0 +1,52 @@
+name: Desktop builds
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tradingagents/desktop/**'
+      - 'desktop/**'
+      - 'tests/test_desktop*'
+      - 'pyproject.toml'
+      - '.github/workflows/desktop.yml'
+permissions:
+  contents: read
+jobs:
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+      - name: Install application and build dependencies
+        run: python -m pip install ".[desktop,a-shares,dev]" "pyinstaller>=6,<7"
+      - name: Test desktop services
+        run: python -m pytest tests/test_desktop_reports.py tests/test_desktop_tasks.py tests/test_desktop_launch.py tests/test_desktop_smoke_lifecycle.py tests/test_desktop_library.py tests/test_desktop_stocks.py tests/test_desktop_preview.py -q
+      - name: Build native application
+        run: python -m PyInstaller --noconfirm desktop/desktop.spec
+      - name: Smoke frozen worker without model calls
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            exe="dist/StockSeek.app/Contents/MacOS/StockSeek"
+          else
+            exe="dist/StockSeek/StockSeekWorker.exe"
+          fi
+          python desktop/frozen_smoke.py "$exe"
+      - name: Archive macOS application
+        if: runner.os == 'macOS'
+        run: ditto -c -k --sequesterRsrc --keepParent dist/StockSeek.app dist/StockSeek-macOS.zip
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'macOS'
+        with:
+          name: StockSeek-macOS
+          path: dist/StockSeek-macOS.zip
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          name: StockSeek-Windows-x64
+          path: dist/StockSeek/**

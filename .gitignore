@@ -225,3 +225,8 @@ reports/
 # Local research outputs and macOS metadata
 artifacts/
 .DS_Store
+
+# Desktop build recipe is source; generated reviews and previews stay local.
+!desktop/desktop.spec
+/output/
+/desktop/assets/icon-*.png

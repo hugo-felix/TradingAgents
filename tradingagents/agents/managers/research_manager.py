@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.decision import DECISION_DISCIPLINE, original_analyst_views
 from tradingagents.agents.grounding import (
     evidence_from_state,
     grounded_run_enabled,
@@ -47,6 +48,10 @@ Check original facts, their units, periods and qualifications before relying on 
 
 **Debate History:**
 {history}
+
+{DECISION_DISCIPLINE}
+
+{original_analyst_views(state)}
 
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
 

@@ -14,6 +14,7 @@ from tradingagents.agents.context import (
     get_language_instruction,
     get_portfolio_context_from_state,
 )
+from tradingagents.agents.decision import DECISION_DISCIPLINE, original_analyst_views
 from tradingagents.agents.evidence import evidence_unavailable
 from tradingagents.agents.grounding import (
     evidence_from_state,
@@ -97,13 +98,17 @@ def create_portfolio_manager(llm):
 
 Check original source facts, units, periods and qualifications for every conclusion. Analyst claims and disagreements are interpretations, not independent source confirmations. Disclose the strongest counterevidence and limitations. The risk debate always contains conflicting stances; deciding which is stronger is the job, so conflict alone is not a reason to Hold. Commit to the stronger case, sized by how decisively it wins. Choose Hold only when the evidence is still balanced after that weighing, or too thin to support a call; do not force a direction to appear decisive. Weigh the analysts on their merits, independent of speaking order.
 
+{DECISION_DISCIPLINE}
+
+{original_analyst_views(state)}
+
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 
         # The typed rating is the decision; the rendered text only carries it.
         # Read back from text, a rating the thesis quotes could replace it.
         result = None
         if grounded_run_enabled(state):
-            result = invoke_grounded_report(llm, prompt, evidence_from_state(state), RATINGS_5_TIER)
+            result = invoke_grounded_report(llm, prompt, evidence_from_state(state), RATINGS_5_TIER, require_decision_plan=True)
             final_trade_decision = result.content
             final_rating = result.rating or RATING_REVIEW
         else:
@@ -115,6 +120,7 @@ Write these sections, in this order, starting with the rating on its own line:
 - **Rating**: exactly one of Buy / Overweight / Hold / Underweight / Sell
 - **Executive Summary**: the call and how to act on it
 - **Investment Thesis**: the evidence that decided it, and what would change it
+- **配置期限**, **执行方式**, **执行条件**, **计划有效期**, **失效条件**, **最强反向证据**, **事件窗口**, **市场与板块**: separate, explicit fields; mark unavailable evidence rather than guessing
 
 """
             decision = invoke_structured(structured_llm, prompt, "Portfolio Manager")

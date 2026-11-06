@@ -72,7 +72,7 @@ def _required_calls(role, trade_date, *, prefetch_disclosures=True):
                          disclosures, ("get_dividends", current),
                          ("get_company_operating_history", current),
                          ("get_valuation_comparison", {**current, "look_back_years": 3})],
-        "news": [("get_news", {"start_date": (day - timedelta(days=7)).isoformat(), "end_date": trade_date}), disclosures],
+        "news": [("get_news", {"start_date": (day - timedelta(days=7)).isoformat(), "end_date": trade_date}), ("get_event_candidates", current), disclosures],
     }
     calls = required.get(role, [])
     if not prefetch_disclosures:

@@ -23,6 +23,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from tradingagents.agents.decision import DecisionPlan, render_decision_plan
+
 # LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
 # numeric field instead of omitting it. Coerce those to None so the structured
 # call validates instead of erroring (#1058). Pydantic still parses real numeric
@@ -259,6 +261,8 @@ class PortfolioDecision(BaseModel):
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
 
+    decision_plan: DecisionPlan | None = Field(default=None, description="Separate allocation horizon, execution triggers, expiry, invalidation, counterevidence and event/benchmark context.")
+
     @field_validator("price_target", mode="before")
     @classmethod
     def _nullish_float_to_none(cls, v):
@@ -284,7 +288,9 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
     # so a reader cannot tell "no target" from "target not reported".
     target = decision.price_target if decision.price_target is not None else "not provided"
     parts.extend(["", f"**Price Target**: {target}"])
-    parts.extend(["", f"**Time Horizon**: {decision.time_horizon or 'not provided'}"])
+    horizon = decision.decision_plan.allocation_horizon if decision.decision_plan else decision.time_horizon
+    parts.extend(["", f"**Time Horizon**: {horizon or 'not provided'}"])
+    parts.extend(["", render_decision_plan(decision.decision_plan)])
     return "\n".join(parts)
 
 

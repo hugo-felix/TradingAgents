@@ -13,6 +13,13 @@ from importlib.resources import files
 from markdown_it import MarkdownIt
 
 from tradingagents.agents.rating import run_rating
+from tradingagents.report_language import (
+    RATING_ZH,
+    chinese_output,
+    localize_report_text,
+    split_source_coverage,
+    split_technical_references,
+)
 from tradingagents.reporting import analyst_names
 
 # Ratings by direction, so the page can show which way the call leans.
@@ -255,21 +262,35 @@ def _run_details(final_state: dict, settings: dict | None) -> list[tuple[str, st
 def render_report(ticker: str, final_state: dict, settings: dict | None, parts) -> str:
     """The report page: title and rating, what produced the run, contents, sections."""
     md = _markdown()
+    chinese = chinese_output(settings)
     rating = run_rating(final_state) if final_state.get("final_trade_decision") else ""
     tone = _TONE.get(rating, "review")
     date = final_state.get("trade_date", "")
 
     title = f'<span class="ticker">{escape(ticker)}</span>'
     if rating:
-        title += f' <span class="rating {tone}">{escape(rating)}</span>'
+        title += f' <span class="rating {tone}">{escape(RATING_ZH.get(rating, rating) if chinese else rating)}</span>'
+    run_details = _run_details(final_state, settings)
+    if chinese:
+        names = {'Generated': '生成时间', 'Deep model': '深入分析模型', 'Quick model': '快速分析模型',
+                 'Analysts': '参与分析', 'Debate rounds': '辩论轮次', 'Data vendors': '数据来源',
+                 'Version': '引擎版本', 'Memory log': '历史复盘说明', 'Fact contract checks': '报告校验'}
+        run_details = [(names.get(label, label), localize_report_text(value)) for label, value in run_details]
+        checks = final_state.get('report_validation') or {}
+        if checks:
+            message = f"通过 {sum(row.get('status') == 'passed' for row in checks.values())} 项，未通过 {sum(row.get('status') == 'failed' for row in checks.values())} 项；校验不代表经济推理正确。"
+            run_details = [(label, escape(message) if label == '报告校验' else value) for label, value in run_details]
     details = "".join(
         f'<div class="{"note" if label == "Memory log" else "detail"}">'
         f"<dt>{escape(label)}</dt><dd>{value}</dd></div>"
-        for label, value in _run_details(final_state, settings)
+        for label, value in run_details
     )
 
     contents, body = [], []
     for n, (heading, _folder, written) in enumerate(parts, 1):
+        if chinese:
+            heading = localize_report_text(heading)
+            written = [(localize_report_text(agent), filename, localize_report_text(text)) for agent, filename, text in written]
         agents = "".join(
             f'<li><a href="#s{n}-{m}"><span class="bar"></span> <span class="label">{escape(agent)}</span></a></li>'
             for m, (agent, _f, _t) in enumerate(written, 1)
@@ -279,17 +300,29 @@ def render_report(ticker: str, final_state: dict, settings: dict | None, parts) 
                         f'<span class="label">{escape(name)}</span></a><ul>{agents}</ul></li>')
         body.append(f'<section id="s{n}"><h2>{escape(heading)}</h2>')
         for m, (agent, _filename, text) in enumerate(written, 1):
-            body.append(f'<h3 id="s{n}-{m}">{escape(agent)}</h3>\n{_render_agent_text(md, text)}')
+            references = []
+            coverage = ''
+            if chinese:
+                text, coverage = split_source_coverage(text)
+                text, references = split_technical_references(text)
+            rendered = _render_agent_text(md, text)
+            if coverage:
+                rendered += '<details class="source-coverage"><summary>来源覆盖详情</summary>' + _render_agent_text(md, coverage) + '</details>'
+            if references:
+                rendered += '<details class="technical-references"><summary>技术引用</summary><pre>' + escape('\n'.join(references)) + '</pre></details>'
+            body.append(f'<h3 id="s{n}-{m}">{escape(agent)}</h3>\n{rendered}')
         body.append("</section>")
 
-    page_title = " ".join(x for x in (ticker, date, rating) if x)
+    if chinese:
+        details = '<details><summary>生成与数据来源</summary><dl class="run">' + details + '</dl></details>'
+    page_title = " ".join(x for x in (ticker, date, RATING_ZH.get(rating, rating) if chinese else rating) if x)
     return f"""<!doctype html>
-<html lang="en">
+<html lang="{'zh-CN' if chinese else 'en'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-<title>{escape(page_title)}: TradingAgents report</title>
+<title>{escape(page_title)}: {'股票研究报告' if chinese else 'TradingAgents report'}</title>
 <style>{_CSS}</style>
 </head>
 <body>
@@ -297,16 +330,16 @@ def render_report(ticker: str, final_state: dict, settings: dict | None, parts) 
 <header class="masthead">
 <a class="logo" href="{_COMPANY}" rel="noopener" aria-label="Tauric Research">{_LOGO}</a>
 <h1>{title}</h1>
-<p class="date">{escape(f"Analysis of {date}" if date else "Analysis")}</p>
-<dl class="run">{details}</dl>
+<p class="date">{escape(('分析日期：' + date) if chinese else (f'Analysis of {date}' if date else 'Analysis'))}</p>
+{details if chinese else '<dl class="run">' + details + '</dl>'}
 </header>
-<nav class="contents" aria-label="Sections"><ul>{"".join(contents)}</ul></nav>
+<nav class="contents" aria-label="{'报告目录' if chinese else 'Sections'}"><ul>{"".join(contents)}</ul></nav>
 <main>
 {"".join(body)}
 </main>
-<footer class="credit"><a href="{_PROJECT}" rel="noopener">TradingAgents</a> powered by <a class="brand" href="{_ORG}" rel="noopener">Tauric Research</a></footer>
+<footer class="credit"><a href="{_PROJECT}" rel="noopener">TradingAgents</a> {'由' if chinese else 'powered by'} <a class="brand" href="{_ORG}" rel="noopener">Tauric Research</a></footer>
 </div>
-<a class="to-top" href="#top">Top</a>
+<a class="to-top" href="#top">{'返回顶部' if chinese else 'Top'}</a>
 </body>
 </html>
 """

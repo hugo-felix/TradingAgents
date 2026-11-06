@@ -51,7 +51,7 @@ def test_missing_sources_are_never_available(content, status):
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize('role,names', [('market', {'get_stock_data', 'get_verified_market_snapshot'}), ('fundamentals', {'get_fundamentals', 'get_balance_sheet', 'get_cashflow', 'get_income_statement', 'get_company_disclosures', 'get_dividends', 'get_company_operating_history', 'get_valuation_comparison'}), ('news', {'get_news', 'get_company_disclosures'})])
+@pytest.mark.parametrize('role,names', [('market', {'get_stock_data', 'get_verified_market_snapshot'}), ('fundamentals', {'get_fundamentals', 'get_balance_sheet', 'get_cashflow', 'get_income_statement', 'get_company_disclosures', 'get_dividends', 'get_company_operating_history', 'get_valuation_comparison'}), ('news', {'get_news', 'get_event_candidates', 'get_company_disclosures'})])
 def test_early_final_still_prefetches_required_sources_with_injected_identity(role, names):
     seen = []
     spec = ANALYST_NODE_SPECS[role]
@@ -86,7 +86,7 @@ def test_prefetch_does_not_spend_model_round_or_repeat():
         out = _analyst_graph(spec, agent, 2).invoke(_state())
     assert len(states) == 3
     assert sum(c.args[0] == 'get_company_disclosures' for c in routed.call_args_list) == 1
-    assert len(out['news_evidence']) == 4
+    assert len(out['news_evidence']) == 5
 
 
 @pytest.mark.unit

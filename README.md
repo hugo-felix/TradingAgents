@@ -111,6 +111,13 @@ The selected analysts work at the same time, each on its own tools, and the rese
 
 ## Installation and CLI
 
+### Desktop workspace (macOS / Windows)
+
+StockSeek provides a local desktop workspace with source-linked report summaries,
+research history, personal decisions, holdings snapshots, and background analysis.
+Install with `pip install ".[desktop,a-shares]"`, then run
+`python -m tradingagents.desktop`. See [desktop usage and packaging](docs/desktop.md).
+
 ### Installation
 
 Clone TradingAgents:

@@ -262,6 +262,23 @@ def get_news(
 
 
 @tool
+def get_event_candidates(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "Analysis date, YYYY-mm-dd; only announcements published by this date"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """Find A-share event candidates announced in the prior 45 days.
+
+    Keep publication dates separate from upcoming/ongoing event dates. This
+    bounded sample is not a complete calendar; missing coverage is not no events.
+    """
+    try:
+        return route_to_vendor("get_event_candidates", ticker, as_of(curr_date, trade_date))
+    except (ValueError, VendorUnavailableError) as exc:
+        return vendor_unavailable("get_event_candidates", exc)
+
+
+@tool
 def get_global_news(
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,

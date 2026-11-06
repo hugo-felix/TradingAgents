@@ -32,6 +32,14 @@ def get_language_instruction() -> str:
         f" Write your entire response in {lang}, except the labelled lines the format"
         f" asks for (the \"**Rating**:\" line, \"FINAL TRANSACTION PROPOSAL:\"):"
         f" keep their label and value in English, exactly as specified."
+        " In structured output keep JSON keys, enum values, source IDs, fact IDs, URLs and ticker codes"
+        " unchanged, but write ALL natural-language field values (summary, points, rationale, limitations,"
+        " execution conditions and decision_plan descriptions) in the requested language."
+        " Explain a technical abbreviation in that language on its first occurrence, followed by the"
+        " abbreviation in parentheses, e.g. 自由现金流（FCF） or 指数移动平均线（EMA） for Chinese."
+        " Do not copy long English passages or tool/schema/validation instructions into the report."
+        " Express analysis, uncertainty and counterevidence in the requested language; cite source IDs"
+        " instead of pasting raw source text. Preserve original quotes when explicitly quoting a source."
     )
 
 

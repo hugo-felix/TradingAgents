@@ -2,6 +2,7 @@
 
 import logging
 import re
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -36,7 +37,28 @@ def _matching_news(data: pd.DataFrame, code: str, name: str | None, start, end) 
     return articles
 
 
+EVENT_CUES = re.compile(r'大会|会议|发布会|投资者日|业绩说明|业绩披露|财报|股东大会|除权|除息|分红|将于|拟于|定于|计划发布|conference|investor day|earnings', re.I)
+
+
 def get_news(ticker: str, start_date: str, end_date: str) -> str:
+    return _company_news(ticker, start_date, end_date)
+
+
+def get_event_candidates(ticker: str, curr_date: str) -> str:
+    """Older, already-published event announcements; never future-publication news.
+
+    These are search candidates, not a verified or complete future event calendar.
+    The analyst must identify the event date and ongoing/upcoming relevance.
+    """
+    day = date.fromisoformat(curr_date)
+    result = _company_news(ticker, (day - timedelta(days=45)).isoformat(), curr_date, events=True)
+    return (f"Event candidates known as of {curr_date}. Review ongoing/upcoming events over the next 14 calendar days; "
+            "retain later events if relevant to the allocation horizon. Separate publication and event dates. "
+            "Candidates require date/issuer verification; this is not a complete event calendar. "
+            "No candidate does not imply no catalysts. Do not claim that a future event already happened.\n\n" + result)
+
+
+def _company_news(ticker: str, start_date: str, end_date: str, *, events=False) -> str:
     code, _ = common.resolve_symbol(ticker)
     start = pd.Timestamp(start_date, tz="Asia/Shanghai")
     end = pd.Timestamp(end_date, tz="Asia/Shanghai") + pd.Timedelta(days=1)
@@ -64,6 +86,11 @@ def get_news(ticker: str, start_date: str, end_date: str) -> str:
         try:
             data = common.request("stock_news_em", symbol=term)
             articles = _matching_news(data, code, name, start, end)
+            if events:
+                # Filter before the item cap, so ordinary recent headlines cannot
+                # displace an older announcement for an ongoing/future event.
+                articles = [(when, row) for when, row in articles
+                            if EVENT_CUES.search(str(row['新闻标题']) + ' ' + str(row['新闻内容']))]
         except VendorUnavailableError as exc:
             if term == code:
                 raise

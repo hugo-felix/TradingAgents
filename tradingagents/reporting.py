@@ -17,6 +17,7 @@ from tradingagents.agents.grounding import (
 from tradingagents.agents.rating import run_rating
 from tradingagents.dataflows.facts import render_facts
 from tradingagents.dataflows.symbols import is_a_share
+from tradingagents.report_language import RATING_ZH, chinese_output, localize_report_text
 
 
 def analyst_names(keys) -> list[str]:
@@ -26,6 +27,8 @@ def analyst_names(keys) -> list[str]:
 
 def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
     """The report's title and what produced it: analysis date, version, models, analysts, vendors."""
+    if chinese_output(settings):
+        return _chinese_header(ticker, final_state, settings)
     lines = [f"# Trading Analysis Report: {ticker}", ""]
     if final_state.get("trade_date"):
         lines.append(f"- Analysis date: {final_state['trade_date']}")
@@ -57,6 +60,37 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
         skipped = sum(entry.get('status') == 'skipped' for entry in checks.values())
         lines.append(f'- Fact contract checks: {passed} passed, {failed} failed, {skipped} skipped; references/value display/known qualifications, not economic correctness.')
     return "\n".join(lines) + "\n\n"
+
+
+def _chinese_header(ticker, final_state, settings):
+    lines = [f'# 股票研究报告：{ticker}', '']
+    if final_state.get('trade_date'):
+        lines.append(f"- 分析日期：{final_state['trade_date']}")
+    if final_state.get('final_trade_decision'):
+        lines.append('- 评级：' + RATING_ZH.get(run_rating(final_state), '需复核'))
+    lines.append(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    checks = final_state.get('report_validation') or {}
+    if checks:
+        passed = sum(row.get('status') == 'passed' for row in checks.values())
+        failed = sum(row.get('status') == 'failed' for row in checks.values())
+        skipped = sum(row.get('status') == 'skipped' for row in checks.values())
+        lines.append(f'- 报告校验：通过 {passed} 项，未通过 {failed} 项，跳过 {skipped} 项；校验不代表经济推理正确。')
+    if settings:
+        s = settings.get
+        roles = {'market': '技术面', 'social': '情绪面', 'sentiment': '情绪面', 'fundamentals': '基本面', 'news': '消息面'}
+        lines.extend(['', '<details><summary>生成与数据来源</summary>', '',
+                      '- 参与分析：' + '、'.join(roles.get(key, key) for key in s('analysts', [])),
+                      f"- 研究辩论：{s('max_debate_rounds', '?')} 轮；风险辩论：{s('max_risk_discuss_rounds', '?')} 轮"])
+        for tier, label in (('deep', '深入分析模型'), ('quick', '快速分析模型')):
+            provider = s(f'{tier}_think_provider') or s('llm_provider', '?')
+            lines.append(f"- {label}：{provider} / {s(f'{tier}_think_llm', '?')}")
+        vendors = {**(s('data_vendors') or {}), **(s('tool_vendors') or {})}
+        if vendors:
+            lines.append('- 数据来源：' + '、'.join(dict.fromkeys(str(value) for value in vendors.values())))
+        lines.extend([f"- 引擎版本：TradingAgents {s('version', '?')}", '', '</details>'])
+    if final_state.get('memory_note'):
+        lines.append('- 历史复盘说明：' + final_state['memory_note'])
+    return '\n'.join(lines) + '\n\n'
 
 
 # The report's sections in order: (heading, folder, [(agent, file, state path)]).
@@ -128,6 +162,10 @@ def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict 
                                  for entry in final_state.get('report_validation', {}).values()) and run_rating(final_state) != 'REVIEW':
         raise ValueError('Failed report validation requires REVIEW before publication')
     parts = _report_parts(final_state)
+    if chinese_output(settings):
+        parts = [(localize_report_text(heading), folder,
+                  [(localize_report_text(agent), filename, localize_report_text(text))
+                   for agent, filename, text in written]) for heading, folder, written in parts]
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []

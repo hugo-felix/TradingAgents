@@ -31,6 +31,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+desktop = [
+    "pywebview>=6.0,<7",
+    "keyring>=25,<27",
+]
 a-shares = [
     "akshare>=1.20.27",
     "pypdf>=6.21.4",
@@ -48,6 +52,7 @@ bedrock = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-desktop = "tradingagents.desktop.app:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "tradingagents.__version__"}
@@ -57,7 +62,7 @@ include = ["tradingagents*", "cli*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
-tradingagents = ["assets/*.svg"]
+tradingagents = ["assets/*.svg", "desktop/data/*.json", "desktop/static/*.html", "desktop/static/*.css", "desktop/static/*.js", "desktop/static/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
