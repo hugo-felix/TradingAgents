@@ -345,7 +345,7 @@ def test_a_settlement_failure_is_noted_and_the_run_goes_on(tmp_path, monkeypatch
 
     assert rating == "Overweight"
     assert "could not be settled" in final_state["memory_note"]
-    report = write_report_tree(final_state, "NVDA", tmp_path / "report").read_text()
+    report = write_report_tree(final_state, "NVDA", tmp_path / "report").read_text(encoding='utf-8')
     assert "Memory log: Past decisions could not be settled" in report
 
 
@@ -382,8 +382,8 @@ def test_the_memory_step_reads_lessons_as_of_the_trade_date_and_settles_once(tmp
     state = {"company_of_interest": "NVDA", "trade_date": "2026-01-20"}
 
     graph._memory_step(state)
-    log_after_first = (tmp_path / "log.md").read_text()
+    log_after_first = (tmp_path / "log.md").read_text(encoding='utf-8')
     graph._memory_step(state)
 
     assert asked == ["2026-01-20", "2026-01-20"]
-    assert (tmp_path / "log.md").read_text() == log_after_first
+    assert (tmp_path / "log.md").read_text(encoding='utf-8') == log_after_first

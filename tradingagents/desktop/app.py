@@ -20,6 +20,10 @@ def parse_args(argv=None):
 
 
 def main(argv=None):
+    if '--dividend-worker' in sys.argv:
+        from tradingagents.dataflows.dividend_screen import main as dividend_main
+        sys.argv.remove('--dividend-worker')
+        return dividend_main()
     if '--desktop-worker' in sys.argv:
         from tradingagents.desktop.worker import main as worker_main
         sys.argv.remove('--desktop-worker')
@@ -59,7 +63,9 @@ def main(argv=None):
         min_size=(760, 600), background_color='#0b1016', text_select=True,
     )
     api._window = window
+    api._dividends.start_auto_update()
     window.events.closed += api._tasks.close
+    window.events.closed += api._dividends.close
     window.events.closed += library.close
     try:
         # Windows must use modern Edge; no silent fallback to the old IE renderer.
@@ -69,6 +75,7 @@ def main(argv=None):
     finally:
         library.close()
         api._tasks.close()
+        api._dividends.close()
         lock.__exit__()
 
 

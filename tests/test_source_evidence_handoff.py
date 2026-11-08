@@ -36,6 +36,7 @@ def test_initialized_evidence_and_all_missing_blocks_portfolio_model():
         'tool': 'get_cashflow', 'args': {}, 'status': 'error', 'content': 'Error: offline',
     }}
     llm = MagicMock()
+    llm.with_structured_output.side_effect = NotImplementedError
     result = create_portfolio_manager(llm)(current)
     assert result['final_rating'] == 'REVIEW'
     assert 'REVIEW' in result['final_trade_decision']
@@ -52,6 +53,7 @@ def test_available_source_reaches_portfolio_prompt():
             'unit': 'CNY', 'period': '2026-11-05', 'basis': 'completed close', 'qualifiers': []}],
     }}
     llm = MagicMock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value.content = json.dumps({
         'decision_plan': {
             'allocation_horizon': 'Review next quarter', 'execution_mode': 'wait',
@@ -81,6 +83,7 @@ def test_research_manager_receives_source_even_when_debate_disagrees():
             'unit': 'RMB million', 'period': '2026H1', 'basis': 'reported flow', 'qualifiers': []}],
     }}
     llm = MagicMock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value.content = json.dumps({
         'summary': '应以原始披露为准', 'rating': 'Hold', 'points': [
             {'kind': 'analysis', 'text': '现金流应结合其他证据判断',

@@ -30,7 +30,7 @@ def test_new_tool_uses_run_date_when_model_asks_for_future(monkeypatch, name, ta
 def test_disclosure_tools_are_only_offered_for_a_shares(monkeypatch, module, ticker, enabled):
     seen = []
 
-    def turn(prompt, llm, offered, messages):
+    def turn(prompt, llm, offered, messages, grounded=False):
         seen.extend(t.name for t in offered)
         return AIMessage(content='report'), 'report'
 

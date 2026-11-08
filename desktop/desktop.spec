@@ -7,7 +7,9 @@ root = Path(SPECPATH).parent
 packages = ('tradingagents', 'langchain_openai', 'langchain_anthropic',
             'langchain_google_genai', 'langgraph', 'keyring.backends')
 hidden = [name for package in packages for name in collect_submodules(package)]
-data = collect_data_files('tradingagents')
+# AKShare resolves its calendar package dynamically through importlib.resources.
+hidden += collect_submodules('akshare.data')
+data = collect_data_files('tradingagents') + collect_data_files('akshare')
 for distribution_name in ('tradingagents', 'pywebview', 'keyring', 'akshare', 'pypdf'):
     data += copy_metadata(distribution_name, recursive=True)
 data += [(str(root / 'LICENSE'), 'licenses/TradingAgents')]

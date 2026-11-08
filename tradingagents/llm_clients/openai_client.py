@@ -86,6 +86,10 @@ class GLMChatOpenAI(NormalizedChatOpenAI):
     def __init__(self, **kwargs):
         effort = kwargs.get("reasoning_effort")
         model = kwargs.get("model", "")
+        # GLM-5.3 defaults to maximum thinking, which shares max_tokens with
+        # the answer. Keep the default usable with bounded report budgets.
+        if effort is None and model.lower() in ("glm-5.3", "glm-5.3-flash"):
+            effort = kwargs["reasoning_effort"] = "low"
         if effort is not None:
             levels = get_capabilities(model).reasoning_effort_levels
             if effort not in levels:
@@ -446,7 +450,8 @@ class OpenAIClient(BaseLLMClient):
         for key in _PASSTHROUGH_KWARGS:
             if key not in self.kwargs:
                 continue
-            if (key == "reasoning_effort" and self.provider not in ("glm", "glm-cn")
+            if (key == "reasoning_effort"
+                    and self.provider not in ("glm", "glm-cn", "openai_compatible")
                     and not _supports_reasoning_effort(self.model)):
                 continue
             llm_kwargs[key] = self.kwargs[key]

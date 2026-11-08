@@ -21,7 +21,7 @@ class Model:
         self.valid = valid
 
     def with_structured_output(self, *args, **kwargs):
-        return self
+        raise NotImplementedError
 
     def invoke(self, prompt):
         self.calls.append(prompt)

@@ -24,6 +24,7 @@ def test_a_shares_skip_social_news_screening_and_model_calls(monkeypatch, ticker
     news = Mock(side_effect=AssertionError('News belongs to the News Analyst'))
     monkeypatch.setattr(sentiment.get_news, 'func', news)
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     node = sentiment.create_sentiment_analyst(llm)
     out = node({'company_of_interest': ticker, 'trade_date': '2026-11-05', 'messages': []})
     report = out['sentiment_report']
@@ -50,6 +51,7 @@ def test_a_share_insufficient_data_notice_is_localized_in_chinese():
 def test_attention_without_discussions_never_becomes_sentiment_score(monkeypatch):
     monkeypatch.setattr(sentiment, 'fetch_a_share_attention', Mock(return_value='Source: Eastmoney; rank 648 at 2026-11-05 16:36; attention only'))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     result = sentiment.create_sentiment_analyst(llm)({
         'company_of_interest': '600941.SS', 'trade_date': '2026-11-05', 'messages': [],
     })
@@ -68,6 +70,7 @@ def test_discussion_body_evidence_reaches_summary_and_downstream_context(monkeyp
     original = 'Source https://guba.eastmoney.com/news,600941,123.html; published 2026-11-05 11:31; BODY: 收息与价格波动争议'
     monkeypatch.setattr(sentiment, 'fetch_a_share_discussions', Mock(return_value=original))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value = AIMessage(content='{"summary":"Sample themes include dividend sustainability.","points":[{"kind":"analysis","text":"Investors disagree on dividends and volatility.","source_ids":["sentiment:fetch_a_share_discussions:1"]}]}')
     state = {'company_of_interest': '600941.SS', 'trade_date': '2026-11-05', 'messages': [], 'report_contract_version': 1}
     result = _analyst_graph(ANALYST_NODE_SPECS['social'], sentiment.create_sentiment_analyst(llm), 1).invoke(state)
@@ -83,6 +86,7 @@ def test_discussion_body_evidence_reaches_summary_and_downstream_context(monkeyp
 def test_discussions_can_be_disabled_without_a_network_or_model_call(monkeypatch):
     with run_config({'a_share_discussions_enabled': False}):
         llm = Mock()
+        llm.with_structured_output.side_effect = NotImplementedError
         result = sentiment.create_sentiment_analyst(llm)({
             'company_of_interest': '600941.SS', 'trade_date': '2026-11-05', 'messages': [],
         })
@@ -95,6 +99,7 @@ def test_summary_failure_keeps_original_discussions(monkeypatch):
     original = 'Source: Guba; published 2026-11-05; BODY: ordinary dividend discussion'
     monkeypatch.setattr(sentiment, 'fetch_a_share_discussions', Mock(return_value=original))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.side_effect = RuntimeError('provider offline')
     result = sentiment.create_sentiment_analyst(llm)({
         'company_of_interest': '600941.SS', 'trade_date': '2026-11-05', 'messages': [],
@@ -133,6 +138,7 @@ def test_versioned_a_share_sentiment_records_validation(monkeypatch, available):
     if available:
         monkeypatch.setattr(sentiment, 'fetch_a_share_discussions', Mock(return_value='BODY: investors disagree on dividend sustainability'))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value = AIMessage(content=json.dumps({
         'summary': 'The discussion sample is limited.',
         'points': [{'kind': 'analysis', 'text': 'Investors disagree on dividend sustainability.',
@@ -146,9 +152,26 @@ def test_versioned_a_share_sentiment_records_validation(monkeypatch, available):
     assert llm.invoke.call_count == int(available)
 
 
+def test_historical_discussion_skip_explains_vintage_limit(monkeypatch):
+    monkeypatch.setattr(sentiment, 'fetch_a_share_discussions', Mock(
+        return_value='withheld: live forum snapshots have no historical vintage'))
+    llm = Mock()
+    with run_config({'output_language': '简体中文'}):
+        result = sentiment.create_sentiment_analyst(llm)({
+            'company_of_interest': '600941.SS', 'trade_date': '2026-11-05',
+            'messages': [], 'report_contract_version': 1, 'report_validation': {},
+        })
+    validation = result['report_validation']['social']
+    assert validation['status'] == 'skipped'
+    assert '历史讨论缺少当时快照' in validation['issues'][0]
+    assert 'withheld:' in result['sentiment_report']
+    llm.invoke.assert_not_called()
+
+
 def test_versioned_discussion_rejects_unsupported_numeric_summary(monkeypatch):
     monkeypatch.setattr(sentiment, 'fetch_a_share_discussions', Mock(return_value='BODY: dividends'))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value = AIMessage(content='There are 999 bullish investors.')
     result = sentiment.create_sentiment_analyst(llm)({
         'company_of_interest': '600941.SS', 'trade_date': '2026-11-05',

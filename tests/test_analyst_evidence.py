@@ -86,7 +86,7 @@ def test_prefetch_does_not_spend_model_round_or_repeat():
         out = _analyst_graph(spec, agent, 2).invoke(_state())
     assert len(states) == 3
     assert sum(c.args[0] == 'get_company_disclosures' for c in routed.call_args_list) == 1
-    assert len(out['news_evidence']) == 5
+    assert len(out['news_evidence']) == 4  # The two identical model requests share a source.
 
 
 @pytest.mark.unit
@@ -124,7 +124,7 @@ def test_parallel_roles_keep_independent_source_fields():
 @pytest.mark.unit
 def test_source_content_is_bounded_and_truncation_is_visible():
     from tradingagents.agents.evidence import MAX_ROLE_CONTENT, collect_tool_evidence
-    messages = [ToolMessage('comparison table\n' * 4000, tool_call_id=str(i), name='get_cashflow') for i in range(10)]
+    messages = [ToolMessage(f'period {i}\n' + 'comparison table\n' * 4000, tool_call_id=str(i), name='get_cashflow') for i in range(10)]
     evidence = collect_tool_evidence('fundamentals', messages)
     assert len(evidence) == 10
     assert sum(len(row['content']) for row in evidence.values()) <= MAX_ROLE_CONTENT
@@ -144,7 +144,7 @@ def test_partial_source_does_not_mean_every_fact_is_verified():
 def test_disclosure_28k_and_small_sources_are_kept_in_full():
     from tradingagents.agents.evidence import collect_tool_evidence
     disclosure = 'CNInfo original announcement\n' + '中' * 27_900
-    small_sources = ['small original statement\n' + '数' * 1000 for _ in range(5)]
+    small_sources = [f'small original statement {i}\n' + '数' * 1000 for i in range(5)]
     messages = [ToolMessage(disclosure, tool_call_id='disclosure', name='get_company_disclosures')]
     messages += [ToolMessage(content, tool_call_id=str(i), name='get_cashflow') for i, content in enumerate(small_sources)]
     evidence = collect_tool_evidence('fundamentals', messages)
@@ -155,7 +155,7 @@ def test_disclosure_28k_and_small_sources_are_kept_in_full():
 @pytest.mark.unit
 def test_over_budget_reuses_small_sources_unused_shares():
     from tradingagents.agents.evidence import MAX_ROLE_CONTENT, collect_tool_evidence
-    originals = ['small' * 200, *['announcement' * 3000 for _ in range(3)]]
+    originals = ['small' * 200, *[f'announcement {i}\n' + 'announcement' * 3000 for i in range(3)]]
     messages = [ToolMessage(content, tool_call_id=str(i), name='get_company_disclosures') for i, content in enumerate(originals)]
     contents = [row['content'] for row in collect_tool_evidence('news', messages).values()]
     assert contents[0] == originals[0]

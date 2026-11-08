@@ -41,3 +41,25 @@ def test_reasoning_model_receives_effort(monkeypatch):
 def test_non_reasoning_model_drops_effort(monkeypatch):
     # gpt-4.1 would 400 with reasoning_effort — it must be dropped.
     assert _effort_on("gpt-4.1", monkeypatch) is None
+
+
+@pytest.mark.parametrize("effort", ["none", "low"])
+def test_local_endpoint_receives_explicit_effort(effort):
+    from tradingagents.llm_clients.factory import create_tier_client
+
+    llm = create_tier_client({
+        "llm_provider": "openai_compatible",
+        "backend_url": "http://localhost:8888/v1",
+        "quick_think_llm": "Qwen3.8-27B-GGUF:UD-Q4_K_XL",
+        "openai_reasoning_effort": effort,
+        "max_tokens": 8192,
+    }, "quick").get_llm()
+    payload = llm._get_request_payload("test")
+    assert payload["reasoning_effort"] == effort
+    assert payload.get("max_completion_tokens", payload.get("max_tokens")) == 8192
+
+
+def test_local_endpoint_does_not_default_to_reasoning():
+    llm = OpenAIClient("custom-local-model", provider="openai_compatible",
+                       base_url="http://localhost:8888/v1").get_llm()
+    assert "reasoning_effort" not in llm._get_request_payload("test")

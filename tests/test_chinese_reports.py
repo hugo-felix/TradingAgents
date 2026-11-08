@@ -51,9 +51,9 @@ def test_chinese_publication_localizes_markdown_html_and_remains_importable(tmp_
     with run_config({'output_language': '简体中文'}):
         output = write_report_tree(report_state(), '600941.SS', tmp_path,
                                    settings={'output_language': '简体中文', 'analysts': ['market']})
-    text = output.read_text()
-    html = output.with_suffix('.html').read_text()
-    decision = (tmp_path / '5_portfolio/decision.md').read_text()
+    text = output.read_text(encoding='utf-8')
+    html = output.with_suffix('.html').read_text(encoding='utf-8')
+    decision = (tmp_path / '5_portfolio/decision.md').read_text(encoding='utf-8')
     assert '# 股票研究报告：600941.SS' in text
     assert '- 分析日期：2026-11-05' in text
     assert '**评级**：减配' in decision and '**执行摘要**' in decision
@@ -71,9 +71,9 @@ def test_english_publication_keeps_existing_contract(tmp_path):
     with run_config({'output_language': 'English'}):
         output = write_report_tree(report_state(), 'AAPL', tmp_path,
                                    settings={'output_language': 'English'})
-    assert '# Trading Analysis Report: AAPL' in output.read_text()
-    assert '**Rating**: Underweight' in (tmp_path / '5_portfolio/decision.md').read_text()
-    assert '<html lang="en">' in output.with_suffix('.html').read_text()
+    assert '# Trading Analysis Report: AAPL' in output.read_text(encoding='utf-8')
+    assert '**Rating**: Underweight' in (tmp_path / '5_portfolio/decision.md').read_text(encoding='utf-8')
+    assert '<html lang="en">' in output.with_suffix('.html').read_text(encoding='utf-8')
 
 
 def test_chinese_standalone_report_import_without_state_or_metadata(tmp_path):
@@ -81,7 +81,7 @@ def test_chinese_standalone_report_import_without_state_or_metadata(tmp_path):
     source.mkdir()
     (source / 'complete_report.md').write_text(
         '# 股票研究报告：600941.SS\n\n- 分析日期：2026-11-05\n- 评级：减配\n\n'
-        '## V. 最终配置决策\n\n### 配置经理\n\n**评级**：减配\n\n**执行摘要**：条件触发。')
+        '## V. 最终配置决策\n\n### 配置经理\n\n**评级**：减配\n\n**执行摘要**：条件触发。', encoding='utf-8')
     store = DesktopStore(tmp_path / 'app')
     assert store.import_directory(source)['added'] == 1
     report = store.get_report(store.list_reports()[0]['id'])
@@ -131,7 +131,7 @@ def test_fixed_translation_does_not_change_url_or_source_identifier_or_code():
 def test_chinese_html_citations_are_collapsed_but_source_data_remains_present(tmp_path):
     output = write_report_tree(report_state(), '600941.SS', tmp_path,
                                settings={'output_language': '简体中文'})
-    html = output.with_suffix('.html').read_text()
+    html = output.with_suffix('.html').read_text(encoding='utf-8')
     assert '<details class="technical-references">' in html
     assert '技术引用' in html and 'market:snapshot:1#close' in html
 
@@ -143,6 +143,6 @@ def test_source_coverage_table_is_advanced_detail_in_chinese_reading_and_html(tm
     state = report_state()
     state['market_report'] += '\n\nSource coverage / 来源覆盖（仅工具返回状态，不代表事实全部验证或解析完整）\n' + table
     output = write_report_tree(state, '600941.SS', tmp_path, settings={'output_language': '简体中文'})
-    html = output.with_suffix('.html').read_text()
+    html = output.with_suffix('.html').read_text(encoding='utf-8')
     assert '<details class="source-coverage">' in html
     assert 'market:get_stock_data:1' in html

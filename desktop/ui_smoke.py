@@ -22,7 +22,10 @@ if not options.native:
     parser.error('原生验收必须显式传入 --native；日常验证请使用 browser_smoke.py。')
 import webview  # noqa: E402
 
-from desktop.smoke_runtime import exit_smoke  # noqa: E402
+if __package__:
+    from desktop.smoke_runtime import exit_smoke
+else:
+    from smoke_runtime import exit_smoke
 
 results = {'ok': False}
 
@@ -123,4 +126,5 @@ try {
         results['error'] = type(exc).__name__
     finally:
         api._tasks.close()
+        api._dividends.close()
 exit_smoke(results)

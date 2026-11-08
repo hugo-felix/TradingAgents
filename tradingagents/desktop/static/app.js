@@ -2,7 +2,7 @@
 (() => {
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const labels = {today:'今日关注',research:'股票研究',holdings:'持仓管理',history:'历史记录',stock:'股票档案',analysis:'分析任务',settings:'应用设置'};
+  const labels = {dividends:'高股息',today:'今日关注',research:'股票研究',holdings:'持仓管理',history:'历史记录',stock:'股票档案',analysis:'分析任务',settings:'应用设置'};
   const ratings = {Buy:'买入',Overweight:'增配',Hold:'持有',Underweight:'减配',Sell:'卖出',REVIEW:'需复核'};
   const actions = {observe:'继续观察',review:'安排重新研究',change:'调整个人计划'};
   const tabs = {summary:'研究摘要',evidence:'事实与依据',judgment:'我的判断',full:'完整报告'};
@@ -31,6 +31,8 @@
     ++loadingReport;rememberDrafts();if(root)state.stack=[];else state.stack.push(snapshot());
     state.page=page;render();window.scrollTo(0,0);
     if(page==='history')loadHistory();
+    if(page==='dividends')loadDividends();
+    if(page==='today')loadEntryPlan();
   }
   async function openReport(id) {
     const token=++loadingReport;
@@ -43,16 +45,171 @@
   function render() {
     $('#page-label').textContent=labels[state.page];$('#back').hidden=state.stack.length===0;
     document.querySelectorAll('.sidebar [data-page]').forEach(b=>{if(b.dataset.page===state.page||(state.page==='stock'&&b.dataset.page==='research'))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
-    const views={today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
+    const views={dividends:dividends,today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
     window.StockSeekControls?.close();$('#content').innerHTML=views[state.page]();restoreDrafts();window.StockSeekControls?.enhance($('#content'));document.querySelectorAll('form').forEach(form=>form.noValidate=true);const stockInput=$('#analysis-form [name="ticker"]');if(stockInput?.value)resolveStockField(stockInput);renderTask();if(state.page==='today'){fitPreview();const scroller=$('#preview-scroll');if(scroller)scroller.scrollTop=state.previewScroll||0;ensurePreview();}
+  }
+  async function loadDividends() {
+    const results=await Promise.allSettled([api('dividend_screen'),api('dividend_watchlist')]);
+    if(results[0].status==='fulfilled'){state.dividendData=results[0].value;state.dividendError='';}
+    else state.dividendError=results[0].reason.message;
+    if(results[1].status==='fulfilled'){state.dividendWatches=results[1].value;state.dividendWatchError='';}
+    else state.dividendWatchError=results[1].reason.message;
+    if(state.page==='dividends')rememberDrafts();
+    if(state.page==='dividends')render();
+    await loadEntryPlan();
+  }
+  async function loadEntryPlan(preserveDrafts=true) {
+    try {state.entryPlan=await api('entry_plan');state.entryError='';}
+    catch(error){state.entryPlan=null;state.entryError=error.message;}
+    if(state.page==='today'){if(preserveDrafts)rememberDrafts();render();}
+  }
+  function entryPreparation() {
+    const plan=state.entryPlan,p=plan?.preferences;
+    if(!plan)return `<section class="entry-preparation" aria-label="建仓准备"><h2>建仓准备</h2>${state.entryError?`<p role="alert">读取失败：${esc(state.entryError)}</p><button data-action="entry-reload">重新读取</button>`:'<p role="status">正在读取候选与个人计划…</p>'}</section>`;
+    const money=n=>Number(n).toLocaleString('zh-CN',{maximumFractionDigits:2});
+    const number=(n,suffix='')=>typeof n==='number'&&Number.isFinite(n)?`${esc(n.toFixed(2))}${suffix}`:'待核验';
+    const candidates=plan?.candidates||[];
+    const researched=candidates.filter(r=>state.allReports.some(item=>item.ticker.split('.')[0]===r.code)).length;
+    const recorded=candidates.filter(r=>{const report=state.allReports.find(item=>item.ticker.split('.')[0]===r.code);return report&&state.records.some(item=>item.kind==='decision'&&item.report_id===report.id);}).length;
+    const stale=plan?.as_of&&Math.floor((Date.parse(localDate())-Date.parse(plan.as_of))/86400000)>4;
+    const environmentBusy=['running','cancelling'].includes(state.dividendJob?.status);
+    const market=plan.market||{},portfolio=plan.portfolio||{},environmentLabels={normal:'未触及警戒线',caution:'触及风险警戒线',unknown:'待补数据'};
+    return `<section class="entry-preparation" aria-label="建仓准备"><div class="section-head"><div><h2>选股工作台</h2><p class="muted">先看风险，再研究公司，最后记录自己的计划。</p></div><button class="quiet" data-page="dividends">全部高股息候选 →</button></div>
+      <div class="entry-progress" aria-label="候选研究进度"><div><span>合格候选</span><strong>${candidates.length}<small>只</small></strong></div><div><span>待研究</span><strong>${candidates.length-researched}<small>只</small></strong></div><div><span>已有研究 · 待判断</span><strong>${researched-recorded}<small>只</small></strong></div><div><span>已记录个人判断</span><strong>${recorded}<small>只</small></strong></div></div>
+      <div class="entry-environment"><section class="entry-market"><small>大盘 · 沪深300</small><h3>${esc(environmentLabels[market.status]||'待补数据')}</h3><p>${esc(market.reason||'请先刷新高股息清单')}</p><small>${esc(market.as_of||'日期待核验')} · 已完成交易日</small>${market.status!=='unknown'?`<details class="market-detail"><summary>查看风险指标</summary><dl class="market-metrics" aria-label="大盘风险指标"><div><dt>沪深300收盘 / 120日均线</dt><dd>${number(market.close)} / ${number(market.sma_120)}</dd><small>均线20日变化 ${number(market.sma_slope_20_pct,'%')}</small></div><div><dt>20日年化波动率</dt><dd>${number(market.volatility_20d_pct,'%')}</dd><small>警戒线 &gt; 30%</small></div><div><dt>60日最大回撤</dt><dd>${number(market.drawdown_60d_pct,'%')}</dd><small>警戒线 &gt; 15%</small></div></dl><p class="muted">${market.status==='caution'?'按当前预设，先复核风险再安排新增投入；仍可继续个股研究。':'可继续行业与个股研究，仍需核对估值、公告和实时价格。'}</p></details>`:''}<details class="market-basis"><summary>判断规则与数据来源</summary><p>${esc(plan.method||'判断规则待补齐')}</p><p>来源：${esc(market.endpoint||'待补齐')} · ${esc(market.symbol||'')}<br>采集：${esc(market.fetched_at||'时间待核验')}</p><p>回撤是区间内从高点到后续低点的最大跌幅，并非未来跌幅预测。规则未经回测，不是买卖信号。</p></details><div id="entry-environment-job" role="status">${environmentBusy?`<p>${esc(state.dividendJob.phase)}</p><button data-action="dividend-cancel">取消刷新</button>`:`<button data-action="entry-environment-refresh">${stale?'刷新全部筛选':'更新大盘与行业'}</button><button data-action="entry-environment-direct">直连重试</button>${state.dividendJob?.status==='failed'?`<p>${esc(state.dividendJob.phase)}</p>`:''}`}</div></section><section class="entry-portfolio"><small>我的持仓 · 行业分布</small><h3>${portfolio.status==='empty'?'未录入持仓':portfolio.status==='unknown'?'持仓覆盖不足':(portfolio.sectors||[]).map(s=>`${esc(s.sector)} ${number(s.weight_pct,'%')}`).join(' / ')}</h3><p>${portfolio.status==='empty'?'空仓可直接开始研究；已有股票请录入持仓。':portfolio.status==='unknown'?`无法完整计价：${esc((portfolio.missing_codes||[]).join('、'))}。请补充行情与行业资料。`:esc(portfolio.basis||'按已录入股票的快照市值计算')}</p><small>增持前检查同业集中度；完整保留所有候选</small><button class="quiet" data-page="holdings">管理持仓 →</button></section><section class="entry-personal"><small>我的计划 · 投入边界</small><h3>${p?`目标股息率 ${esc(p.target_yield)}%`:'尚未设置目标'}</h3><p>${p?`计划投入 ¥${money(p.capital)} · 持有 ${esc(p.horizon_years)} 年`:'设置后可计算目标股息对应价格。'}</p>
+      <details class="entry-settings" ${p?'':'open'}><summary>${p?`我的计划 · 目标股息率 ${esc(p.target_yield)}% · 单只投入不超过 ¥${money(p.capital*p.position_pct/100)}`:'设置资金与股息目标'}</summary><form id="entry-preferences-form"><div class="entry-fields"><label>计划投入资金（元）<input name="capital" type="number" min="1" max="1000000000" step="0.01" required data-draft="entry-capital" value="${esc(p?.capital??'')}"></label><label>目标税前股息率（%）<input name="target_yield" type="number" min="4" max="30" step="0.01" required data-draft="entry-target" value="${esc(p?.target_yield??'')}"></label><label>单只投入上限（%）<input name="position_pct" type="number" min="1" max="100" step="0.01" required data-draft="entry-position" value="${esc(p?.position_pct??'')}"></label><label>预计持有年限<input name="horizon_years" type="number" min="1" max="50" step="0.5" required data-draft="entry-horizon" value="${esc(p?.horizon_years??'')}"></label></div><div class="actions"><button type="submit">保存个人计划</button><span class="muted">自主设定的上限，不代表适合你的仓位；资金可分批投入。</span></div></form></details></section></div>
+      ${state.entryError?`<p role="alert">建仓数据读取失败：${esc(state.entryError)} <button data-action="entry-reload">重试</button></p>`:!plan?'<p class="muted" role="status">正在读取候选…</p>':!plan.as_of?'<div class="entry-empty"><h3>先获取一份高股息清单</h3><p>筛选完成后，这里会列出通过分红、财务和低波门槛的候选。</p><button data-page="dividends">前往筛选</button></div>':`<div class="section-head entry-caption"><h3>全部合格候选 · ${candidates.length} 只</h3><span class="muted">按年度股息率排序，非买入优先级 · 快照 ${esc(plan.as_of)}${stale?' · 数据较旧，请先刷新':''}</span></div>${candidates.length?`<div class="table-wrap entry-table"><table><thead><tr><th>股票 / 行业</th><th>年度股息率</th><th>价格 / 目标参考</th><th>1年风险</th><th>策略检查</th><th>下一步</th></tr></thead><tbody>${candidates.map(r=>{
+        const report=state.allReports.find(item=>item.ticker.split('.')[0]===r.code),m=r.metrics;
+        const decision=report&&state.records.find(item=>item.kind==='decision'&&item.report_id===report.id);
+        const check=r.strategy||{},sector=check.sector||{};
+        return `<tr data-entry-code="${esc(r.code)}"><td><strong>${esc(r.name)}</strong><small>${esc(r.code)} · ${esc(r.sector)}</small></td><td>${number(m.yield_pct,'%')}<small>${esc(m.dividend_year??'年份缺失')}年度 · 税前</small></td><td>${number(m.price,'元')}<small>${esc(m.quote_time||'行情时间待核验')}</small><div class="entry-reference"><small>目标参考</small>${r.reference_price==null?(p?'每股分红待核验':'先设置目标'):number(r.reference_price,'元')}<small>${p?'按已实施分红计算':'保存计划后计算'}</small></div></td><td>波动 ${number(m.volatility_1y_pct,'%')}<small>回撤 ${number(m.max_drawdown_1y_pct,'%')}</small></td><td class="entry-check"><strong>${esc(check.label||'待补数据')}</strong><small>行业：${esc(environmentLabels[sector.status]||'待补数据')}</small><details><summary>查看依据</summary><p>${esc((check.reasons||[]).join('；'))}</p><p>${esc(sector.reason||'行业行情待补齐')} · ${esc(sector.as_of||'日期待核验')}</p><p>60日相对沪深300 ${number(sector.relative_60d_pct,'个百分点')} · 来源 ${esc(sector.endpoint||'待补齐')} ${esc(sector.symbol||'')}</p><p>同业已录入股票市值占比：${check.portfolio_status==='empty'?'无已录入持仓':check.portfolio_status==='unknown'?'持仓数据不全':number(check.held_sector_pct??0,'%')}</p></details></td><td>${report?`<span>${report.rating==='REVIEW'?'研究需复核':decision?'已记录个人判断':'研究已完成 · 待你判断'}</span><small>${esc(report.date)} · 模型${esc(ratings[report.rating]||report.rating)}</small><button data-report="${esc(report.id)}">阅读结论与条件</button><button data-report="${esc(report.id)}" data-judgment="true">${decision?'查看 / 补充判断':'记录个人计划'}</button>${decision?`<small>本版记录：${esc(actions[decision.action]||decision.action)}</small><p class="entry-decision clamp">${esc(decision.text)}</p>`:''}`:`<span>尚未找到本地研究</span><button data-action="entry-research" data-code="${esc(r.code)}">填写研究配置</button>`}</td></tr>`;
+      }).join('')}</tbody></table></div>`:'<p class="entry-empty">当前没有同时通过基础和精选门槛、年度股息率 >4% 的候选。可继续等待，或在高股息页面检查未通过的原因。</p>'}`}
+      <details class="entry-method"><summary>策略说明与下单前检查</summary><p>${esc(plan.limitations||'环境数据待补齐。')}</p><p>${esc(plan.method||'')}</p><p>沪深300：120日均线 ${number(market.sma_120)} · 20日年化波动 ${number(market.volatility_20d_pct,'%')} · 60日回撤 ${number(market.drawdown_60d_pct,'%')} · 来源 ${esc(market.endpoint||'待补齐')} ${esc(market.symbol||'')}</p><ol><li>核对行业和公司的最新公告、分红可持续性、估值，以及研究中的反向证据和失效条件。</li><li>用券商实时价格复核目标股息率；开盘跳空、除权除息后须重新计算。</li><li>按自己的资金上限分批安排；先核对同业已投入金额，条件不足时继续等待。这里只统计已录入股票，不计算交易后的总资产仓位。</li></ol><p>参考价格 = 已实施年度每股税前分红 ÷ 目标股息率，向下取整到分。它不是估值结论，也不保证未来分红。持有年限仅记录个人意图，未用于收益预测。这里不监测实时价格，不判断条件已触发；模型“持有”不等于空仓可以买入。</p></details></section>`;
+  }
+  function dividendWatchlist() {
+    const watches=state.dividendWatches||[],items=state.dividendData?.items||[];
+    return `<details class="dividend-watches"><summary>我的自选 · ${watches.length} 只</summary><p class="muted">关注和备注保存在本机；退出筛选后仍保留。变化在成功刷新后更新。</p>${state.dividendWatchError?`<p role="alert">自选读取失败：${esc(state.dividendWatchError)}</p>`:''}${!watches.length?'<p>在下方候选列表点击“加入自选”。</p>':watches.map(w=>{
+      const row=items.find(r=>r.code===w.code),change=state.dividendData?.changes?.items?.find(r=>r.code===w.code);
+      return `<section class="dividend-watch" data-watch-code="${esc(w.code)}"><div class="section-head"><strong>${esc(w.name)} · ${esc(w.code)}</strong><button data-action="dividend-unwatch" data-code="${esc(w.code)}">移出自选</button></div><p>${row?`当前${row.core?.status==='pass'?'入选精选':row.core?.status==='fail'?'未入选精选':'待核验'} · 年度股息率 ${row.metrics.yield_pct==null?'缺失':Number(row.metrics.yield_pct).toFixed(2)+'%'}`:'未出现在当前清单；不能据此判断股息或财务恶化。'}</p>${change?`<p class="muted">本次变化：${esc(change.reasons.join('；'))}</p>`:''}<form class="dividend-note-form" data-code="${esc(w.code)}" data-name="${esc(w.name)}"><label>我的备注<textarea name="note" maxlength="2000" data-draft="dividend-note-${esc(w.code)}" rows="2" placeholder="关注理由、希望买入的价格或复核事项">${esc(w.note)}</textarea></label><button type="submit">保存备注</button></form></section>`;
+    }).join('')}</details>`;
+  }
+  function dividendChanges(data) {
+    const changes=data.changes;
+    if(!changes?.previous_at)return '<p class="muted">尚无可比较的上次快照；下一次成功刷新后显示变化。</p>';
+    const entries=changes.items||[],kinds={entered:'新入选',exited:'退出精选',updated:'指标变化'};
+    return `<details class="dividend-changes"><summary>本次变化 · 新入选 ${entries.filter(r=>r.kind==='entered').length} · 退出精选 ${entries.filter(r=>r.kind==='exited').length} · 指标变化 ${entries.filter(r=>r.kind==='updated').length}</summary><p class="muted">对比上次成功快照 ${esc(new Date(changes.previous_at).toLocaleString('zh-CN',{hour12:false}))}。未重新采集的指标、口径不同及缺失数据不推断为恶化；不等于买卖建议。</p>${entries.length?`<ul>${entries.map(r=>`<li><strong>${esc(r.name)} · ${esc(r.code)} · ${esc(kinds[r.kind]||'变化')}</strong><p>${esc(r.reasons.join('；'))}</p></li>`).join('')}</ul>`:'<p>精选进出、4%门槛和同年度每股分红均无上述变化。</p>'}</details>`;
+  }
+  function dividendCoverage(data) {
+    const roster=data.discovery?.roster;
+    if(!roster)return '<p role="status">市场覆盖尚未对账，请刷新核验；未出现不代表不符合条件。</p>';
+    const missing=roster.missing_quote_codes||[], extra=roster.unlisted_quote_codes||[];
+    return `<details class="dividend-scope"><summary>市场覆盖${roster.status==='confirmed'?'已对账':'未确认'} · 行情 ${esc(roster.observed)} 只 · ${roster.status==='confirmed'?'交易所名单':'已取得的部分名单'} ${esc(roster.expected)} 只${missing.length?` · 行情待补 ${missing.length} 只`:''}</summary><p>${roster.status==='confirmed'?'已取得沪深北四个板块的股票名单并与行情逐一对账。':'部分交易所名单获取失败，目前不能确认全市场是否齐全。'} 行情遗漏的股票保留为候选继续核验。</p>${missing.length?`<p>行情缺失代码：${esc(missing.join('、'))}</p>`:''}${extra.length?`<p>行情中未匹配名单的代码：${esc(extra.join('、'))}</p>`:''}</details>`;
+  }
+  function dividendHealth(data) {
+    const items=data.items||[],roster=data.discovery?.roster;
+    const missingYield=items.filter(r=>r.metrics?.yield_pct==null).length;
+    const pending=items.filter(r=>r.core?.status==='pending'||(!r.core&&r.status==='pending')).length;
+    const calendar=data.trading_calendar;
+    return `<section class="dividend-health" aria-label="数据完整性"><div><span>市场覆盖</span><strong>${roster?.status==='confirmed'?((roster.missing_quote_codes||[]).length?'名册已对账 · 行情待补':'名册已对账'):'未确认'}</strong><small>${roster?`行情 ${esc(roster.observed)} 只 · 行情待补 ${(roster.missing_quote_codes||[]).length} 只`:'旧快照缺少交易所名单对账'}</small></div><div><span>精选待核验</span><strong>${pending}<small> 只</small></strong><small>仅统计待核验状态；0只不代表数据齐全</small></div><div><span>年度股息率缺失</span><strong>${missingYield}<small> 只</small></strong><small>包含已因其他条件排除的股票；缺失不视为零</small></div><div><span>交易日历</span><strong>${calendar?.status==='available'?'已取得':'待补充'}</strong><small>${calendar?.status==='available'?`覆盖至 ${esc(calendar.last_date)}；范围外按工作日补更`:'暂按工作日补更，未识别节假日'}</small></div></section>`;
+  }
+  function dividendConcentration(rows) {
+    if(!rows.length)return '';
+    const counts=new Map();
+    rows.forEach(r=>{const sector=r.sector||'行业未识别';counts.set(sector,(counts.get(sector)||0)+1);});
+    const groups=[...counts].sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0],'zh-CN'));
+    const [sector,count]=groups[0],share=count/rows.length*100;
+    return `<details class="dividend-concentration"><summary>当前列表行业分布 · ${esc(sector)} ${count}/${rows.length} 只（${share.toFixed(0)}%）${share>50?' · 行业集中':''}</summary><p>${groups.map(([name,n])=>`${esc(name)} ${n}只（${(n/rows.length*100).toFixed(0)}%）`).join(' · ')}</p><p>按当前筛选结果的股票数量统计，非持仓权重；同一行业可能受相同政策和周期影响。</p></details>`;
+  }
+  function dividendControls() {
+    const job=state.dividendJob||{status:'idle'}, active=['running','cancelling'].includes(job.status);
+    return `<div class="dividend-job" role="status" aria-live="polite">${job.status!=='idle'?`<span>${esc(job.phase)}${active?` · ${job.completed||0} / ${job.total||0} 只`:''}</span>`:''}<div class="actions">${active?`<button data-action="dividend-cancel" ${job.status==='cancelling'?'disabled':''}>${job.status==='cancelling'?'正在停止…':'取消刷新'}</button>`:`<button class="primary" data-action="dividend-refresh">${job.status==='failed'?'重试刷新':'刷新筛选'}</button><button data-action="dividend-reload">读取最新快照</button><details class="dividend-options"><summary>更新与连接</summary><button data-action="dividend-auto" aria-pressed="${job.auto_update!==false}">每日自动更新：${job.auto_update===false?'已关闭':'已开启'}</button><p>应用打开时检查快照；18:00 后按交易日历补更（日历未覆盖时按工作日），缺项或失败每小时重试，当日最多 3 次。首次采集需手动刷新。</p><p>默认沿用系统代理。连接失败时可尝试本次直连。</p><button data-action="dividend-direct">直连刷新</button></details>`}</div></div>`;
+  }
+  async function pollDividends() {
+    const previous=state.dividendJob, job=await api('dividend_status');state.dividendJob=job;
+    if(JSON.stringify(previous)!==JSON.stringify(job)){
+      const controls=$('#dividend-job');if(controls){const focused=controls.contains(document.activeElement)?document.activeElement.dataset.action:null;controls.innerHTML=dividendControls();if(focused)controls.querySelector(`[data-action="${focused}"]:not(:disabled)`)?.focus();}
+      if(job.status==='completed'&&(previous?.id!==job.id||previous?.status!=='completed')){await loadDividends();if(previous?.status==='running')toast('高股息筛选已更新。');}
+      if(state.page==='today'){rememberDrafts();render();}
+      if(job.status==='failed'&&previous?.status==='running')toast(job.phase,true);
+    }
+  }
+  function dividends() {
+    const data=state.dividendData, names={pass:'量化通过',pending:'待核验',fail:'未通过'};
+    const filter=state.dividendFilter||'core';
+    const sort=state.dividendSort||{key:'yield_pct',direction:'desc'};
+    const sortNames={yield_pct:'年度已实施股息率',market_cap_yi:'总市值（亿元）',pe_annual:'静态PE',volatility_1y_pct:'1年波动率',volatility_3y_pct:'3年波动率',max_drawdown_1y_pct:'1年最大回撤',max_drawdown_3y_pct:'3年最大回撤',turnover_20d_yi:'20日日均成交额（亿元）'};
+    const criteria=state.dividendCriteria||{}, period=criteria.period||'1';
+    const sectors=[...new Set((data?.items||[]).map(r=>r.sector))].sort();
+    const eligible=r=>{
+      if(criteria.watched&&!(state.dividendWatches||[]).some(w=>w.code===r.code))return false;
+      if(criteria.query&&!`${r.code} ${r.name}`.includes(criteria.query.trim()))return false;
+      if(criteria.sector&&r.sector!==criteria.sector)return false;
+      return [['minYield','yield_pct',true],['maxVol',`volatility_${period}y_pct`,false],['maxDrawdown',`max_drawdown_${period}y_pct`,false],['minTurnover','turnover_20d_yi',true]].every(([input,key,min])=>criteria[input]==null||criteria[input]===''||(numeric(r.metrics[key])&&(min?r.metrics[key]>=Number(criteria[input]):r.metrics[key]<=Number(criteria[input]))));
+    };
+    const numeric=v=>typeof v==='number'&&Number.isFinite(v);
+    const highYield=r=>numeric(r.metrics.yield_pct)&&r.metrics.yield_pct>4;
+    const viewNames={core:'红利低波精选',core_pending:'精选待核验',yield:'股息率 >4%',all:'全部核验记录',...names};
+    const matches=(r,k)=>k==='all'||(k==='core'?r.core?.status==='pass':k==='core_pending'?r.core?.status==='pending':k==='yield'?highYield(r):r.status===k);
+    const inView=r=>matches(r,filter);
+    const rows=(data?.items||[]).filter(r=>inView(r)&&eligible(r)).sort((a,b)=>{
+      const x=a.metrics[sort.key],y=b.metrics[sort.key];
+      if(!numeric(x)||!numeric(y))return numeric(x)?-1:numeric(y)?1:String(a.code).localeCompare(String(b.code));
+      return (sort.direction==='desc'?y-x:x-y)||String(a.code).localeCompare(String(b.code));
+    });
+    const columnNames={yield_pct:'年度股息率',market_cap_yi:'总市值 · 亿',pe_annual:'静态 PE',volatility_1y_pct:'波动率 · 1年',volatility_3y_pct:'波动率 · 3年',max_drawdown_1y_pct:'回撤 · 1年',max_drawdown_3y_pct:'回撤 · 3年',turnover_20d_yi:'日均成交 · 亿'};
+    const viewNotes={core:'分红、财务与低波门槛均通过',yield:'仅通过股息门槛，仍需核验财务与风险',core_pending:'证据尚未齐备，暂不纳入精选'};
+    const sortHeader=key=>`<th aria-sort="${sort.key===key?(sort.direction==='desc'?'descending':'ascending'):'none'}"><button class="dividend-sort" data-action="dividend-sort" data-sort="${key}">${columnNames[key]} ${sort.key===key?(sort.direction==='desc'?'↓':'↑'):'↕'}</button></th>`;
+    const fmt=(v,suffix='')=>v==null?'缺失':`${Number(v).toFixed(2)}${suffix}`;
+    const stale=data && (Date.now()-Date.parse(data.generated_at)>4*86400000);
+    const advancedActive=period==='3'||['minYield','maxVol','maxDrawdown','minTurnover'].some(k=>criteria[k]!=null&&criteria[k]!=='');
+    const reason=r=>{
+      const checks=[...(r.core?.checks||[]),...(r.checks||[])].filter(c=>c.required!==false);
+      const issues=checks.filter(c=>c.status==='fail');
+      const pending=checks.filter(c=>c.status==='pending');
+      const labels=[...new Set((issues.length?issues:pending).map(c=>c.label==='A股上市满3年'?'上市历史不足':c.label))];
+      return labels.length?`${issues.length?'未通过':'待补充'}：${labels.slice(0,2).join('、')}${labels.length>2?` 等${labels.length}项`:''}`:r.core?.status==='pass'?'分红、财务与低波门槛通过':'缺少精选核验依据';
+    };
+    return `<div class="page-head dividend-page-head"><div><h1>高股息看板</h1><p>以已实施分红为准，比较收益与风险</p></div><div id="dividend-job">${dividendControls()}</div></div>
+
+      ${state.dividendError?`<p role="alert">${esc(state.dividendError)}</p>`:''}
+      ${data?.official_evidence_error?`<p role="alert">${esc(data.official_evidence_error)}</p>`:''}
+      ${data&&data.schema_version!==2?'<p role="alert">尚未完成全市场采集：当前为旧版固定候选池，未出现不代表不符合条件。请刷新核验。</p>':''}
+      ${data?.schema_version===2?dividendCoverage(data):''}
+      ${!data?dividendWatchlist()+'<div class="empty"><h2>尚无筛选快照</h2><p>点击“刷新筛选”，获取行情、分红记录与公开财报。首次运行可能需要数分钟，可切换页面或取消。</p></div>':`
+      <div class="dividend-freshness"><span class="dividend-snapshot-label">筛选快照</span><span>更新于 <time datetime="${esc(data.generated_at)}">${esc(new Date(data.generated_at).toLocaleString('zh-CN',{hour12:false}))}</time></span><span>数据截至 ${esc(data.as_of)}</span></div>
+      ${dividendHealth(data)}
+      <aside class="dividend-risk-scope" aria-label="核验范围"><strong>精选仅通过量化门槛</strong><span>审计意见、最新季报恶化、特别分红与未来分红尚需单独复核。</span></aside>
+      <p class="dividend-yield-definition">筛选与排序使用年度已实施税前股息率，须严格大于 4%。TTM 仅供参考；分红年度、每股金额和行情时间见“核验依据”。</p>
+      ${dividendChanges(data)}
+
+      ${stale?'<p role="alert">快照已超过4天，请重新抓取后再评估。</p>':''}
+      ${data.items.some(r=>r.official_evidence?.length)?'<p class="muted">部分缺项已按官方公告补充；点击核验依据可查看主体、期间、来源和页码。公告补充不改变原始采集时间，也不代表全部条件通过。</p>':''}
+
+      <div class="dividend-overview" role="group" aria-label="按股息门槛或核验状态筛选">${['core','yield','core_pending'].map(k=>`<button class="dividend-stat" data-action="dividend-filter" data-filter="${k}" aria-pressed="${filter===k}"><span class="dividend-stat-label">${viewNames[k]}</span><strong>${data.items.filter(r=>matches(r,k)).length}<small>只</small></strong><span class="dividend-stat-note">${viewNotes[k]}</span></button>`).join('')}</div>
+
+      <section class="dividend-workspace" aria-label="高股息候选列表"><div class="dividend-results-head"><div><h2>${viewNames[filter]} <span>${rows.length}<small> 只</small></span></h2><p>${viewNotes[filter]||'核验记录含未通过或数据缺失的股票，请留意状态'}</p></div><span class="dividend-order">${sortNames[sort.key]}${sort.direction==='desc'?' ↓':' ↑'} · 缺失值置后</span></div>
+      ${dividendConcentration(rows)}
+      <form id="dividend-filters" class="dividend-filters">
+        <label>股票搜索<input name="query" value="${esc(criteria.query||'')}" placeholder="名称或代码"></label>
+        <label>行业<select name="sector"><option value="">全部行业</option>${sectors.map(v=>`<option ${criteria.sector===v?'selected':''}>${esc(v)}</option>`).join('')}</select></label>
+        <label class="dividend-watch-filter"><input type="checkbox" name="watched" ${criteria.watched?'checked':''}>只看自选</label>
+        <div class="actions"><button type="submit" class="primary">应用筛选</button><button type="button" data-action="dividend-reset">重置条件</button></div>
+        <details class="dividend-advanced" ${advancedActive?'open':''}><summary>更多筛选${advancedActive?' · 已启用':''}</summary><div class="dividend-advanced-grid">
+        <label>风险窗口<select name="period"><option value="1" ${period==='1'?'selected':''}>近1年</option><option value="3" ${period==='3'?'selected':''}>近3年</option></select></label>
+        ${[['minYield','最低股息率（%）'],['maxVol','最高年化波动率（%）'],['maxDrawdown','最高最大回撤（%）'],['minTurnover','最低日均成交额（亿元）']].map(([key,label])=>`<label>${label}<input type="number" min="0" step="any" name="${key}" value="${esc(criteria[key]??'')}" placeholder="不限"></label>`).join('')}
+        </div><p class="muted">启用数值门槛后，缺失该指标的股票不进入结果。</p></details>
+      </form>
+
+      ${!rows.length?`<div class="empty"><h2>当前分类没有候选</h2><p>可切换其他核验状态，或刷新筛选获取最新结果。</p><button data-action="dividend-filter" data-filter="yield">查看股息率 >4% 候选</button><button data-action="dividend-filter" data-filter="core_pending">查看精选待核验</button></div>`:''}<div class="table-wrap dividend-table-scroll" tabindex="0" role="region" aria-label="股票指标对比，可横向滚动" ${!rows.length?'hidden':''}><table class="research-table dividend-table"><caption class="sr-only">${viewNames[filter]}，共 ${rows.length} 只；点击列标题排序</caption><thead><tr><th>股票</th>${sortHeader('yield_pct')}${sortHeader('market_cap_yi')}${sortHeader('pe_annual')}${sortHeader(`volatility_${period}y_pct`)}${sortHeader(`max_drawdown_${period}y_pct`)}${sortHeader('turnover_20d_yi')}<th>精选结论 / 原因</th></tr></thead><tbody>${rows.map(r=>`<tr><td><strong>${esc(r.name)}</strong><small>${esc(r.code)} · ${esc(r.sector)}</small><button data-action="dividend-watch" data-code="${esc(r.code)}" data-name="${esc(r.name)}" aria-pressed="${(state.dividendWatches||[]).some(w=>w.code===r.code)}">${(state.dividendWatches||[]).some(w=>w.code===r.code)?"已关注":"加入自选"}</button></td><td>${fmt(r.metrics.yield_pct,'%')}<small>${r.metrics.dividend_year==null?'年度缺失':esc(r.metrics.dividend_year)+'年'} · 税前</small><small>TTM ${fmt(r.metrics.yield_ttm_pct,'%')}</small></td><td>${fmt(r.metrics.market_cap_yi)}</td><td>${fmt(r.metrics.pe_annual)}</td><td>${fmt(r.metrics[`volatility_${period}y_pct`],'%')}</td><td>${fmt(r.metrics[`max_drawdown_${period}y_pct`],'%')}</td><td>${fmt(r.metrics.turnover_20d_yi)}</td><td><span class="dividend-status ${esc(r.core?.status||'pending')}">${r.core?.status==='pass'?'入选':r.core?.status==='fail'?'未入选':'待核验'}</span><small class="dividend-reason">${esc(reason(r))}</small><button data-action="dividend-evidence" aria-haspopup="dialog">核验依据</button><dialog class="dividend-evidence" aria-labelledby="dividend-title-${esc(r.code)}"><header><h2 id="dividend-title-${esc(r.code)}">${esc(r.name)} · ${esc(r.code)}</h2><button data-action="dividend-evidence-close" aria-label="关闭核验依据">关闭</button></header><p>基础核验：${esc(names[r.status]||'未知')} · 精选：${r.core?.status==='pass'?'入选':r.core?.status==='fail'?'未入选':'待核验'}</p><h4>精选依据</h4><p>年度每股派息率：${fmt(r.metrics.payout_ratio_pct,'%')} · 基本EPS：${fmt(r.metrics.basic_eps_annual,'元')}</p><ul>${(r.core?.checks||[]).map(c=>`<li>${esc(names[c.status])}：${esc(c.label)} ${esc(c.detail)}</li>`).join('')}</ul><h4>基础核验依据</h4><ul>${r.checks.map(c=>`<li>${c.required===false?'参考项（不作门槛） · ':''}${esc(names[c.status])}：${esc(c.label)} ${esc(c.detail)}</li>`).join('')}</ul>${(r.risk_notes||[]).map(n=>`<p>${esc(n)}</p>`).join('')}<p>低波行情截至：${esc(r.metrics.risk_as_of||'缺失')}</p>${r.provenance?.dividends?.endpoint==='stock_dividend_cninfo'?'<p>分红数据已由备用来源巨潮资讯获取；其他缺项仍按核验结果显示。</p>':''}${r.errors?.length?`<details><summary>采集来源提示与历史记录（${r.errors.length}）</summary>${r.errors.map(e=>`<p>${esc(e)}</p>`).join('')}</details>`:''}<p>年度口径：${esc(r.metrics.dividend_year??'缺失')}年，每股税前现金分红 ${fmt(r.metrics.dividend_annual,'元')} ÷ 行情价格 ${fmt(r.metrics.price,'元')}。TTM 每股分红 ${fmt(r.metrics.dividend_ttm,'元')}，仅供参考。</p><p>行情时间：${esc(r.metrics.quote_time||'缺失')}</p><p>来源：${Object.values(r.sources||{}).map(url=>esc(url)).join('<br>')}</p></dialog></td></tr>`).join('')}</tbody></table></div></section><div class="dividend-reference"><h2>跟踪与核验</h2>${dividendWatchlist()}<details class="dividend-scope"><summary>筛选规则与数据范围</summary><p>${esc(data.coverage)}</p><p>${esc(data.rules)}</p><p>${esc(data.core_rules||'旧快照缺少精选依据，请刷新筛选。')}</p><p>${esc(data.limitations)}</p><p>不限制实际控制人性质及行业排名。${data.schema_version===2?`扫描全A股，核验市值≥500亿元及市值缺失的候选；低波指标齐备 ${data.discovery.risk_complete} / ${data.items.length} 只。${data.discovery.provider_error_count} 只附有采集来源提示（含已恢复的接口切换）。${data.discovery.yield_excluded||0} 只年度股息率未超过4%，未继续采集财务与低波数据。`:'当前为旧版候选快照。'}</p><p>仅按快照日期核验；审计意见、最新季报恶化、特别分红及未来分红仍需复核。年度每股派息率采用基本EPS估算，现金流覆盖为累计净利润口径。筛选通过不代表低风险。</p></details><details class="dividend-records" ${['pass','pending','fail','all'].includes(filter)?'open':''}><summary>其他核验记录${['pass','pending','fail','all'].includes(filter)?` · ${viewNames[filter]}`:''}</summary><div class="actions">${['pass','pending','fail','all'].map(k=>`<button class="dividend-stat" data-action="dividend-filter" data-filter="${k}" aria-pressed="${filter===k}">${viewNames[k]} · ${data.items.filter(r=>matches(r,k)).length}</button>`).join('')}</div></details><details class="dividend-method"><summary>指标口径与快照说明</summary><p>年度已实施股息率 = 对应年度已实施的每股税前现金分红 ÷ 行情价格；TTM仅供参考。金额、价格与行情时间见核验依据。</p><p>波动率为日收益标准差×√252，回撤显示跌幅绝对值；采用前复权收盘价，排除当日未完成行情。刷新失败或取消时保留上次成功快照。</p></details></div>`}`;
   }
   function today() {
     const updates=state.pending;
     const selected=updates.find(r=>r.id===state.selected)||updates[0];
     const date=new Intl.DateTimeFormat('zh-CN',{month:'long',day:'numeric',weekday:'long'}).format(new Date());
-    return `<div class="page-head"><div><h1>今日关注</h1><p>${esc(date)}</p></div><div class="page-meta" data-monitoring-status><span class="status-dot"></span><span>本地报告 · 自动更新</span><details class="scope-popover"><summary aria-label="查看数据覆盖范围">数据范围</summary><p>自动读取本机研究报告。行情与公告尚未持续监测。</p></details></div></div>
-      ${state.allReports.length||updates.length?`<div class="section-head workspace-heading"><h2>研究更新 <span class="count">${updates.length===100?'100+':updates.length}</span></h2><span class="muted">按分析日期排序</span></div><div class="split"><div class="queue">${updates.length?updates.map(r=>`<button class="queue-row" data-inspect="${esc(r.id)}" aria-pressed="${r.id===selected?.id}"><div class="queue-identity"><div><strong>${nameOf(r)}</strong><span class="stock-code">${esc(r.ticker)}</span></div>${badge(r.rating)}</div><p class="preview-text">${r.rating==='REVIEW'?'报告需复核':r.has_previous?'研究已更新，查看各维度重点':'首次研究，查看各维度重点'}</p><div class="queue-foot"><time>${esc(r.date)}</time><span>查看研究 →</span></div></button>`).join(''):`<div class="empty"><h3>研究均已留下判断</h3><p class="muted">可在股票研究中回看。</p></div>`}</div>
-      ${selected?`<section id="today-detail" class="inspector research-preview" aria-label="研究速览"><header class="preview-header"><div class="preview-heading"><span>研究速览</span><time>截至 ${esc(selected.date)}</time></div><div class="preview-stock"><h2>${nameOf(selected)} <span class="muted">${esc(selected.ticker)}</span></h2>${badge(selected.rating)}</div></header><div id="preview-scroll" class="preview-scroll" tabindex="0" aria-label="速览内容，可滚动">${previewContent(selected)}</div><footer class="preview-actions"><div class="actions"><button class="primary" data-report="${esc(selected.id)}">打开研究</button><button data-report="${esc(selected.id)}" data-judgment="true">记录判断</button></div><span>原文摘录 · 点击重点查看依据</span></footer></section>`:''}</div>`:
+    return `<div class="page-head today-head"><div><h1>今日关注</h1><p>${esc(date)}</p></div><div class="page-meta" data-monitoring-status><span class="status-dot"></span><span>本地报告 · 自动更新</span><details class="scope-popover"><summary aria-label="查看数据覆盖范围">数据范围</summary><p>自动读取本机研究报告。行情与公告尚未持续监测。</p></details></div></div>
+      ${state.holdings.some(h=>h.quantity>0)?`<details class="entry-held"><summary>建仓准备 · 大盘、行业与增持检查</summary>${entryPreparation()}</details>`:entryPreparation()}
+      ${state.allReports.length||updates.length?`<div class="section-head workspace-heading"><h2>研究更新 <span class="count">${updates.length===100?'100+':updates.length}</span></h2><span class="muted">按分析日期排序</span></div><div class="split"><div class="queue">${updates.length?updates.map(r=>`<button class="queue-row" data-inspect="${esc(r.id)}" aria-pressed="${r.id===selected?.id}"><div class="queue-identity"><div><strong>${nameOf(r)}</strong><span class="stock-code">${esc(r.ticker)}</span></div>${badge(r.rating)}</div><p class="preview-text">${esc(r.display_conclusion||r.conclusion||'暂无独立结论，打开研究查看依据。')}</p><div class="queue-foot"><time>${esc(r.date)}</time><span>${r.rating==='REVIEW'?'需复核':r.has_previous?'更新研究':'首次研究'}</span></div></button>`).join(''):`<div class="empty"><h3>研究均已留下判断</h3><p class="muted">可在股票研究中回看。</p></div>`}</div>
+      ${selected?`<section id="today-detail" class="inspector research-preview" aria-label="研究速览"><header class="preview-header"><div class="preview-heading"><span>研究速览</span><time>分析日期 ${esc(selected.date)}</time></div><div class="preview-stock"><h2>${nameOf(selected)} <span class="muted">${esc(selected.ticker)}</span></h2><div class="preview-rating"><span>模型观点</span>${badge(selected.rating)}</div></div></header><div id="preview-scroll" class="preview-scroll" tabindex="0" aria-label="速览内容，可滚动">${previewContent(selected)}</div><footer class="preview-actions"><div class="actions"><button class="primary" data-report="${esc(selected.id)}">打开研究</button><button data-report="${esc(selected.id)}" data-judgment="true">记录判断</button></div><span>原文摘录 · 点击重点查看依据</span></footer></section>`:''}</div>`:
       `<section class="onboarding"><svg class="empty-icon" viewBox="0 0 48 48" aria-hidden="true"><path d="M8 12h13l4 5h15v22H8zM24 23v10m-4-4 4 4 4-4"/></svg><h2>${['starting','scanning'].includes(state.library.status)?'正在读取本地研究':'开始你的第一份研究'}</h2><p>${['starting','scanning'].includes(state.library.status)?'已有报告会自动出现在这里。':'选择股票，生成研究摘要与完整依据。'}</p><div class="actions"><button class="primary" data-page="analysis">新建研究</button><button class="quiet" data-action="import">读取其他报告目录</button></div></section>`}
       ${state.pendingOffset||updates.length===100?`<div class="pagination"><button data-action="pending-prev" ${state.pendingOffset===0?'disabled':''}>上一页</button><span>第 ${state.pendingOffset/100+1} 页</span><button data-action="pending-next" ${updates.length<100?'disabled':''}>下一页</button></div>`:''}`;
   }
@@ -78,7 +235,7 @@
     return `<div class="summary-workspace"><div class="summary-main"><section class="conclusion"><div class="section-kicker"><span>研究结论</span><span class="muted">模型观点 · ${esc(r.date)}</span></div>${s.conclusion?`<p class="quote">${esc(reading(s.conclusion))}</p>${sourceButton(s.conclusion,'完整执行摘要')}`:`<p class="quote">暂无结构化摘要</p><button class="link" data-tab="full">查看最终决策</button>`}</section>
       ${decisionPlan(r)}<section class="thesis"><div class="section-head"><h2>核心依据</h2></div>${s.reasons.length?s.reasons.map((item,i)=>`<div class="argument"><span class="number">${String(i+1).padStart(2,'0')}</span><div><p>${esc(reading(item).replace(/^\d+[.)、]\s*/,''))}</p></div>${sourceButton(item,'依据')}</div>`).join(''):'<p class="muted">暂无可提取论据，可在完整报告中查看。</p>'}</section>
       ${r.previous?`<section class="version-changes"><div class="section-head"><h2>较上次研究</h2><button class="link" data-report="${esc(r.previous.id)}">${esc(r.previous.date)} 版本 →</button></div>${r.changes.length?r.changes.map(c=>`<div class="comparison"><strong>${esc(c.label)}</strong><p class="before clamp">上次 ${esc(c.display_before??c.before)}</p><p class="after clamp">本次 ${esc(c.display_after??c.after)}</p></div>`).join(''):'<p class="muted">评级、结论摘录与判断条件未变化。</p>'}</section>`:`<div class="first-version"><span class="status-dot"></span>首次研究<span>暂无历史版本可比较</span></div>`}</div>
-      <aside class="summary-aside"><section class="side-note"><h2>反向证据与风险</h2>${excerpt(s.counter)}</section><section class="side-note"><h2>重新评估条件</h2>${excerpt(s.conditions)}</section><div class="summary-context"><span>当前版本</span><strong>${esc(r.id.slice(0,8))}</strong><p>${esc(r.date)} 的研究快照</p></div></aside></div>`;
+      <aside class="summary-aside"><section class="side-note research-next"><h2>看完之后做什么？</h2><p>核对执行条件、反向证据和失效条件，再记录自己的选择：继续等待、补充研究，或制定个人计划。</p><button data-report="${esc(r.id)}" data-judgment="true">记录个人计划 →</button><p class="muted">研究完成不代表买入条件已满足；模型“持有”也不等于空仓可以买入。</p></section><section class="side-note"><h2>反向证据与风险</h2>${excerpt(s.counter)}</section><section class="side-note"><h2>重新评估条件</h2>${excerpt(s.conditions)}</section><div class="summary-context"><span>当前版本</span><strong>${esc(r.id.slice(0,8))}</strong><p>${esc(r.date)} 的研究快照</p></div></aside></div>`;
   }
   function evidence(r) {
     const section=r.sections.find(s=>s.id===state.section)||r.sections.find(s=>s.id==='decision')||r.sections[0];
@@ -88,7 +245,7 @@
   }
   function judgment(r) {
     const records=state.stockRecords;
-    return `<div class="summary-layout"><div><div class="panel"><div class="section-head"><h2>我的研究判断</h2><button data-action="toggle-decision">记录新判断</button></div><p class="muted">模型观点：${esc(ratings[r.model_rating]||r.model_rating)} · ${esc(r.date)}。个人计划与实际持仓分别维护。</p><form id="decision-form" hidden><label>处理方式<select name="action" data-draft="decision-action-${esc(r.id)}">${Object.entries(actions).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>判断依据<textarea name="reason" data-draft="decision-reason-${esc(r.id)}" required maxlength="10000" placeholder="哪些依据仍成立？哪些需要重新核查？"></textarea></label><div class="actions"><button type="submit" class="primary">保存个人判断</button><button type="button" data-action="toggle-decision">暂不记录</button></div><p class="muted">“安排重新研究”会保留你的研究意图，需要由你启动实际分析。</p></form></div><div class="timeline">${records.length?records.map(recordHTML).join(''):'<p class="muted">尚未记录个人判断。没有新的想法时可以跳过。</p>'}</div><div class="pagination"><button data-action="decisions-prev" ${state.decisionOffset===0?'disabled':''}>上一页判断</button><span>第 ${state.decisionOffset/100+1} 页</span><button data-action="decisions-next" ${records.length<100?'disabled':''}>下一页判断</button></div></div><div class="panel side-note"><h2>这次判断对应的研究</h2><div class="row"><span>分析日期</span><span>${esc(r.date)}</span></div><div class="row"><span>模型评级</span><span>${esc(ratings[r.rating])}</span></div><div class="row"><span>报告版本</span><span>${esc(r.id.slice(0,8))}</span></div><p class="muted">保存判断不会更新股数、成本或自动下单。</p></div></div>`;
+    return `<div class="summary-layout"><div><div class="panel"><div class="section-head"><h2>我的研究判断</h2><button data-action="toggle-decision">记录新判断</button></div><p class="muted">模型观点：${esc(ratings[r.model_rating]||r.model_rating)} · ${esc(r.date)}。个人计划与实际持仓分别维护。</p><form id="decision-form" hidden><label>处理方式<select name="action" data-draft="decision-action-${esc(r.id)}">${Object.entries(actions).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}</select></label><label>判断依据<textarea name="reason" data-draft="decision-reason-${esc(r.id)}" required maxlength="10000" placeholder="例如：等待价格达到什么条件；最多投入多少；哪些风险出现就放弃；何时重新检查。"></textarea></label><div class="actions"><button type="submit" class="primary">保存个人判断</button><button type="button" data-action="toggle-decision">暂不记录</button></div><p class="muted">“安排重新研究”会保留你的研究意图，需要由你启动实际分析。</p></form></div><div class="timeline">${records.length?records.map(recordHTML).join(''):'<p class="muted">尚未记录个人判断。没有新的想法时可以跳过。</p>'}</div><div class="pagination"><button data-action="decisions-prev" ${state.decisionOffset===0?'disabled':''}>上一页判断</button><span>第 ${state.decisionOffset/100+1} 页</span><button data-action="decisions-next" ${records.length<100?'disabled':''}>下一页判断</button></div></div><div class="panel side-note"><h2>这次判断对应的研究</h2><div class="row"><span>分析日期</span><span>${esc(r.date)}</span></div><div class="row"><span>模型评级</span><span>${esc(ratings[r.rating])}</span></div><div class="row"><span>报告版本</span><span>${esc(r.id.slice(0,8))}</span></div><p>记录后返回今日关注，按自己写下的条件继续观察。未满足时继续等待；页面不监测实时价格。</p><div class="actions"><button data-page="today">返回今日关注</button><button data-page="holdings">已成交？录入持仓</button></div><p class="muted">只有实际成交后才录入数量与成本。保存判断不会自动下单。</p></div></div>`;
   }
   function full(r) {
     const section=r.sections.find(s=>s.id===state.section)||r.sections[0];
@@ -108,26 +265,44 @@
     return `<div class="form-grid"><label>模型服务商<select name="provider" id="${prefix}-provider" data-draft="${prefix}-provider">${state.providers.map(p=>`<option value="${esc(p)}" ${s.provider===p?'selected':''}>${esc(p)}</option>`).join('')}</select></label><label>自定义服务地址（可选）<input name="backend_url" data-draft="${prefix}-url" value="${esc(s.backend_url||'')}" type="url" placeholder="默认使用服务商地址"></label></div><div class="form-grid"><label>快速模型 ID<input name="quick_model" data-draft="${prefix}-quick" value="${esc(s.quick_model||'')}" required maxlength="160"></label><label>深度模型 ID<input name="deep_model" data-draft="${prefix}-deep" value="${esc(s.deep_model||'')}" required maxlength="160"></label></div>`;
   }
   function analysis() {
-    return `<div class="page-head"><div><h1>分析任务</h1><p>运行中的研究与任务记录</p></div></div><div class="panel form-panel"><form id="analysis-form"><div class="form-grid"><label class="stock-field">股票代码<input name="ticker" data-draft="analysis-ticker" placeholder="601658 / 600941 / AAPL" required maxlength="40" autocomplete="off" aria-describedby="analysis-stock-match"><div id="analysis-stock-match" class="stock-match" role="status" aria-live="polite">输入代码后自动识别名称与市场</div></label><label>分析日期<input name="date" data-draft="analysis-date" type="date" value="${localDate()}" max="${localDate()}" required></label></div>${modelFields('analysis')}<p class="muted">使用配置服务商的 API，会产生相应费用。凭据从环境变量或系统凭据库读取；新结果单独保存。</p><div class="actions"><button class="primary" type="submit" ${taskActive()?'disabled':''}>开始研究</button><button type="button" data-page="settings">配置凭据</button></div></form></div><div id="task-detail" class="panel form-panel">${taskDetail()}</div>`;
+    return `<div class="page-head"><div><h1>分析任务</h1><p>运行中的研究与任务记录</p></div></div><div id="task-detail" class="panel form-panel">${taskDetail()}</div><div class="panel form-panel"><form id="analysis-form"><div class="form-grid"><label class="stock-field">股票代码<input name="ticker" data-draft="analysis-ticker" placeholder="601658 / 600941 / AAPL" required maxlength="40" autocomplete="off" aria-describedby="analysis-stock-match"><div id="analysis-stock-match" class="stock-match" role="status" aria-live="polite">输入代码后自动识别名称与市场</div></label><label>信息截止日期<input name="date" data-draft="analysis-date" type="date" value="${localDate()}" max="${localDate()}" required aria-describedby="analysis-date-help"><span id="analysis-date-help" class="muted">研究当前情况请选择今天（含休市日）。选择过去日期时，无法确认当时版本的财报、分红与讨论会留空，行情取截止日内最近交易日。</span></label></div>${modelFields('analysis')}<p class="muted">使用配置服务商的 API，会产生相应费用。凭据从环境变量或系统凭据库读取；新结果单独保存。</p><div class="actions"><button class="primary" type="submit" ${taskActive()?'disabled':''}>开始研究</button><button type="button" data-page="settings">配置凭据</button></div></form></div>`;
   }
   function taskDetail() {
     const t=state.task;
     if(t.status==='idle')return '<h3>尚无分析任务</h3><p class="muted">运行后会显示真实阶段与耗时，不估算虚假完成百分比。</p>';
-    return `<span class="eyebrow">${esc(t.ticker)} · ${esc(t.date)}</span><div class="task-detail"><strong>${esc(t.phase||t.status)}</strong><span class="muted">${elapsed(t)}${t.error_kind?` · ${esc(t.error_kind)}`:''}</span></div><div class="actions">${taskActive()?`<button data-action="cancel" ${t.status==='cancelling'?'disabled':''}>取消分析</button>`:''}${t.status==='completed'?`<button class="primary" data-report="${esc(t.report_id)}">查看新研究</button>`:''}${['failed','cancelled','interrupted'].includes(t.status)?'<button data-action="retry-task">按原配置重试</button>':''}</div>`;
+    return `<span class="eyebrow">分析进度 · ${esc(t.ticker)} · ${esc(t.date)}</span><div class="task-detail"><strong>${esc(t.phase||t.status)}</strong><span class="muted">${elapsed(t)}${t.error_kind?` · ${esc(t.error_kind)}`:''}</span></div>${taskProgress(t)}<div class="actions">${taskActive()?`<button data-action="cancel" ${t.status==='cancelling'?'disabled':''}>取消分析</button>`:''}${t.status==='completed'?`<button class="primary" data-report="${esc(t.report_id)}">查看新研究</button>`:''}${['failed','cancelled','interrupted'].includes(t.status)?'<button data-action="retry-task">按原配置重试</button>':''}</div>`;
+  }
+  function taskProgress(t) {
+    const steps=t.progress||[];if(!steps.length)return '';
+    const done=steps.filter(s=>s.status==='completed').length;
+    const labels={completed:'已完成',running:t.status==='running'?'进行中':t.status==='cancelling'?'正在停止':'已停止',pending:taskActive()?'等待中':'未执行'};
+    return `<div class="task-progress"><div class="progress-caption"><span>已完成 ${done} / ${steps.length} 项</span><span class="muted">${t.status==='running'&&t.phase_started_epoch?`当前阶段${elapsed({...t,started_epoch:t.phase_started_epoch})}`:'按实际完成项更新'}</span></div><div class="progress-segments" aria-label="已完成 ${done} / ${steps.length} 项">${steps.map(s=>`<span class="${s.status==='completed'?'completed':s.status==='running'&&t.status==='running'?'running':''}"></span>`).join('')}</div><ol class="progress-steps">${steps.map(s=>`<li class="${s.status==='completed'?'completed':s.status==='running'&&t.status==='running'?'running':''}"><span class="step-marker" aria-hidden="true">${s.status==='completed'?'✓':s.status==='running'&&t.status==='running'?'●':'○'}</span><span>${esc(s.title)}</span><small>${labels[s.status]||'等待中'}</small></li>`).join('')}</ol>${t.status==='running'?'<p class="muted progress-note">数据获取和模型推理可能需要数分钟；四项分析并行执行，完成顺序可能不同。阶段耗时不代表剩余时间，可切换页面继续浏览。连续 15 分钟无阶段进展或总耗时超过 60 分钟将自动停止，可按原配置重试。</p>':''}</div>`;
   }
   function settings() {
     return `<div class="page-head"><div><h1>应用设置</h1><p>模型、凭据与本地存储</p></div></div><div class="panel form-panel"><h2>分析模型默认值</h2><form id="settings-form">${modelFields('settings')}<button class="primary" type="submit">保存默认模型</button></form></div><div class="panel form-panel"><h2>API 凭据</h2><p class="muted">保存在 macOS 钥匙串或 Windows 凭据库。不会写入报告或工作台数据库。也支持已有环境变量与启动目录中的 .env。</p><form id="credential-form"><label>服务商<select name="provider" id="credential-provider">${state.providers.map(p=>`<option value="${esc(p)}" ${p===state.settings.provider?'selected':''}>${esc(p)}</option>`).join('')}</select></label><p id="credential-status" class="muted">点击检查凭据状态。</p><label>API Key<input name="key" type="password" autocomplete="off" spellcheck="false" placeholder="仅输入新凭据时填写" required></label><div class="actions"><button type="submit">保存到系统凭据库</button><button type="button" data-action="credential-check">检查配置</button></div></form><details><summary>本地模型与订阅登录</summary><p class="muted">Ollama 使用本地服务地址和已安装的模型 ID。ChatGPT 使用现有 CLI 登录状态：先运行 tradingagents login chatgpt。Bedrock / Azure 等企业服务仍需相应环境配置。</p></details></div><div class="panel form-panel"><h2>报告自动读取</h2><p class="muted">启动时读取已有报告，每 15 秒检查新增或变更。选择过的目录会保留。</p><div class="report-directories">${state.library.directories.length?state.library.directories.map(path=>`<p class="muted prewrap">${esc(path)}</p>`).join(''):'<p class="muted">当前没有关联目录。</p>'}</div>${state.library.errors.length?`<p class="muted">${state.library.errors.length} 项读取异常，下次检查自动重试。</p>`:''}<div class="actions"><button data-action="import">添加报告目录</button><button data-action="refresh-reports">立即检查</button></div></div><div class="panel form-panel"><h2>本地数据</h2><p class="muted prewrap">${esc(state.data_directory)}</p><p class="muted">包含报告快照、个人记录、任务和运行缓存。备份时关闭应用后复制整个目录。导出报告可在股票档案中操作。</p><div class="actions"><button data-action="theme">切换${state.theme==='dark'?'浅色':'深色'}主题</button></div></div>`;
   }
   function localDate() {const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
-  function elapsed(t) {if(!t.started_epoch)return '';const end=t.finished_at?new Date(t.finished_at).getTime():Date.now();const secs=Math.max(0,Math.floor(end/1000-t.started_epoch));return `耗时 ${Math.floor(secs/60)} 分 ${secs%60} 秒`;}
+  function elapsed(t) {
+    const interrupted=t.status==='interrupted';
+    if(interrupted&&(!t.last_activity_at||!t.started_epoch))return '耗时未知';
+    if(!t.started_epoch)return '';
+    const end=interrupted?new Date(t.last_activity_at).getTime():(t.finished_at?new Date(t.finished_at).getTime():Date.now());
+    if(!Number.isFinite(end))return '耗时未知';
+    const secs=Math.max(0,Math.floor(end/1000-t.started_epoch));
+    return `${interrupted?'截至最后活动约耗时':'耗时'} ${Math.floor(secs/60)} 分 ${secs%60} 秒`;
+  }
   function renderTask() {
     const t=state.task,el=$('#task-strip');el.hidden=t.status==='idle';el.classList.toggle('running',t.status==='running');
     document.documentElement.style.setProperty('--task-height','0px');
     if(el.hidden){fitPreview();return;}
-    el.innerHTML=`<span><span class="task-dot"></span>${esc(t.ticker)} · ${esc(t.phase||t.status)} <span class="muted">${elapsed(t)}</span></span><div class="actions">${t.status==='completed'?`<button data-report="${esc(t.report_id)}">查看结果</button>`:''}<button data-page="analysis">任务详情</button>${t.status==='running'?'<button data-action="cancel">取消</button>':''}</div>`;
+    const steps=t.progress||[],done=steps.filter(s=>s.status==='completed').length;
+    el.innerHTML=`<span><span class="task-dot"></span>${esc(t.ticker)} · ${esc(t.phase||t.status)} <span class="muted">${steps.length?`已完成 ${done}/${steps.length} · `:''}${elapsed(t)}</span></span><div class="actions">${t.status==='completed'?`<button data-report="${esc(t.report_id)}">查看结果</button>`:''}<button data-page="analysis">任务详情</button>${t.status==='running'?'<button data-action="cancel">取消</button>':''}</div>`;
     document.documentElement.style.setProperty('--task-height',`${el.offsetHeight}px`);
     fitPreview();
-    if(state.page==='analysis'&&$('#task-detail'))$('#task-detail').innerHTML=taskDetail();
+    if(state.page==='analysis'&&$('#task-detail')){
+      $('#task-detail').innerHTML=taskDetail();
+      const submit=$('#analysis-form [type="submit"]');if(submit)submit.disabled=taskActive();
+    }
   }
   async function refreshData() {
     const data=await api('bootstrap');Object.assign(state,{library:data.library,pending:data.pending,allReports:data.reports,holdings:data.holdings,records:data.records,task:data.task,settings:data.settings,providers:data.providers,data_directory:data.data_directory});
@@ -150,6 +325,11 @@
     const metadata=fields.filter(field=>['horizon','mode','expiry'].includes(field.key));
     const conditions=fields.filter(field=>['execution','invalidation','catalysts'].includes(field.key));
     const context=fields.filter(field=>['counter','benchmark'].includes(field.key));
+    if(preview){
+      const primary=fields.filter(field=>['mode','execution','invalidation'].includes(field.key));
+      const secondary=fields.filter(field=>!['mode','execution','invalidation'].includes(field.key));
+      return `<section class="decision-plan preview-plan" aria-label="执行与风险边界"><div class="plan-heading"><h3>执行与风险边界</h3><span>原报告条件</span></div><div class="plan-conditions">${primary.map(item).join('')}</div><details class="preview-details plan-more"><summary>期限、事件与补充依据</summary><div class="plan-conditions">${secondary.map(item).join('')}</div></details></section>`;
+    }
     return `<section class="decision-plan ${preview?'':'report-plan'}" aria-label="配置与执行计划"><div class="plan-heading"><h3>配置与执行</h3><span>按原报告条件评估</span></div><div class="plan-metadata">${metadata.map(item).join('')}</div><div class="plan-conditions">${conditions.map(item).join('')}</div><details class="plan-context"><summary>反向证据与市场背景</summary>${context.map(item).join('')}</details></section>`;
   }
   function previewContent(selected){
@@ -158,11 +338,12 @@
     const data=report.preview;
     const source=(item,text,kind='')=>`<button class="preview-point ${kind}" data-preview-source="${esc(item.source)}" data-report-id="${esc(report.id)}" title="查看原文依据"><span>${esc(text||reading(item))}</span><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5"/></svg></button>`;
     const empty={not_run:'未提供独立分析章节。',review:'该维度校验未通过，请先核查原文。',unstructured:'已有正文，暂未提取到可靠的独立摘要。',insufficient:'现有信息不足以形成该维度判断。',unassessed:'原报告未给出该维度评估。'};
-    return `${report.warnings.length?`<details class="preview-data-note ${report.rating==='REVIEW'?'needs-review':''}"><summary>${report.rating==='REVIEW'?'报告需复核':'数据说明'} · ${report.warnings.length} 项</summary><ul>${report.warnings.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></details>`:''}<section class="preview-verdict"><h3>总体结论</h3>${data.conclusion?source(data.conclusion):'<p class="muted">暂无独立结论，可打开完整研究核查。</p>'}</section>${decisionPlan(report,true)}<details class="report-glossary"><summary>术语说明</summary><p>EMA：指数移动平均线；SMA：简单移动平均线；MACD：平滑异同移动平均线；RSI：相对强弱指标；ATR：平均真实波幅；FCF：自由现金流；DPS：每股股息；ARPU：每用户平均收入；PE：市盈率；PB：市净率；ROE：净资产收益率。</p></details><div class="preview-angles">${data.dimensions.map(angle=>`<section class="preview-angle" data-angle="${esc(angle.key)}"><div class="angle-heading"><h3>${esc(angle.label)}</h3><span class="angle-status ${esc(angle.status)} ${esc(angle.kind)}">${angle.status==='ready'?(angle.kind==='scenario'?'条件情景':angle.kind==='risk'?'风险关注':'重点'):esc(angleStates[angle.status]||'待核查')}</span></div>${angle.items.length?angle.items.map((item,index)=>source(item,reading(item),index?'supporting-point':'')).join(''):`<p class="angle-empty">${esc(empty[angle.status]||'暂无可用摘要')}${angle.source?`<button class="link" data-preview-source="${esc(angle.source)}" data-report-id="${esc(report.id)}">查看原文 →</button>`:''}</p>`}</section>`).join('')}</div><section class="preview-followup"><h3>后续关注</h3>${data.follow_up?source(data.follow_up):'<p class="angle-empty">原报告未单独列出重新评估条件。</p>'}</section>`;
+    const angles=data.dimensions.map(angle=>`<section class="preview-angle" data-angle="${esc(angle.key)}"><div class="angle-heading"><h3>${esc(angle.label)}</h3><span class="angle-status ${esc(angle.status)} ${esc(angle.kind)}">${angle.status==='ready'?(angle.kind==='scenario'?'条件情景':angle.kind==='risk'?'风险关注':'重点'):esc(angleStates[angle.status]||'待核查')}</span></div>${angle.items.length?source(angle.items[0]):`<p class="angle-empty">${esc(empty[angle.status]||'暂无可用摘要')}${angle.source?`<button class="link" data-preview-source="${esc(angle.source)}" data-report-id="${esc(report.id)}">查看原文 →</button>`:''}</p>`}${angle.items.length>1?`<details class="preview-details angle-more"><summary>补充依据 · ${angle.items.length-1}</summary>${angle.items.slice(1).map(item=>source(item,reading(item),'supporting-point')).join('')}</details>`:''}</section>`).join('');
+    return `${report.warnings.length?`<details class="preview-data-note ${report.rating==='REVIEW'?'needs-review':''}"><summary>${report.rating==='REVIEW'?'报告需复核':'数据说明'} · ${report.warnings.length} 项</summary><ul>${report.warnings.map(text=>`<li>${esc(text)}</li>`).join('')}</ul></details>`:''}<section class="preview-verdict"><h3>研究结论</h3>${data.conclusion?source(data.conclusion):'<p class="muted">暂无独立结论，可打开完整研究核查。</p>'}</section>${decisionPlan(report,true)}<div class="preview-evidence-heading"><h3>关键依据</h3><span>点击摘录查看完整上下文</span></div><div class="preview-angles">${angles}</div><details class="preview-details preview-followup"><summary>后续关注与术语</summary>${data.follow_up?source(data.follow_up):'<p class="angle-empty">原报告未单独列出重新评估条件。</p>'}<p class="preview-glossary">EMA：指数移动平均线；SMA：简单移动平均线；MACD：平滑异同移动平均线；RSI：相对强弱指标；ATR：平均真实波幅；FCF：自由现金流；DPS：每股股息；ARPU：每用户平均收入；PE：市盈率；PB：市净率；ROE：净资产收益率。</p></details>`;
   }
   function fitPreview(){
     const pane=$('#today-detail');if(!pane)return;
-    if(innerWidth<=700){pane.style.removeProperty('height');return;}
+    if(getComputedStyle(pane).position==='static'){pane.style.removeProperty('height');return;}
     const top=pane.getBoundingClientRect().top;const height=Math.max(240,innerHeight-Math.max(14,top)-20);
     if(Math.abs(pane.offsetHeight-height)>1)pane.style.height=height+'px';
   }
@@ -187,7 +368,36 @@
     form.elements.ticker.value=ticker;if(h){form.elements.quantity.value=h.quantity;form.elements.cost.value=h.cost;}
     $('#holding-stock-match').className='stock-match';$('#holding-stock-match').textContent='输入代码后自动识别名称与市场';clearValidation(form);$('#holding-dialog').showModal();form.elements.ticker.focus();if(ticker)resolveStockField(form.elements.ticker);
   }
-  async function act(action) {
+  async function act(action, target) {
+    if(action==='entry-reload'){await loadEntryPlan();return;}
+    if(action==='entry-research'){state.drafts['analysis-ticker']=target.dataset.code;state.drafts['analysis-date']=localDate();go('analysis');return;}
+    if(action==='dividend-watch'){
+      const code=target.dataset.code;
+      state.dividendWatches=await api('save_dividend_watch',code,target.dataset.name);render();
+      document.querySelector('.dividend-watches').open=true;
+      document.querySelector(`[data-watch-code="${code}"] textarea`)?.focus();return;
+    }
+    if(action==='dividend-unwatch'){
+      state.dividendWatches=await api('remove_dividend_watch',target.dataset.code);
+      delete state.drafts[`dividend-note-${target.dataset.code}`];render();toast('已移出自选。');return;
+    }
+    if(action==='dividend-evidence'){target.nextElementSibling.showModal();return;}
+    if(action==='dividend-evidence-close'){target.closest('dialog').close();return;}
+    if(action==='dividend-sort'){const key=target.dataset.sort;if(!['yield_pct','market_cap_yi','pe_annual','volatility_1y_pct','volatility_3y_pct','max_drawdown_1y_pct','max_drawdown_3y_pct','turnover_20d_yi'].includes(key))return;const previous=state.dividendSort||{key:'yield_pct',direction:'desc'};state.dividendSort={key,direction:previous.key===key&&previous.direction==='desc'?'asc':'desc'};render();document.querySelector(`[data-sort="${key}"]`)?.focus();return;}
+    if(action==='dividend-reset'){state.dividendCriteria={};render();return;}
+    if(action==='dividend-filter'){state.dividendFilter=target.dataset.filter;render();return;}
+    if(action==='dividend-auto'){state.dividendJob=await api('set_dividend_auto_update',state.dividendJob?.auto_update===false);render();return;}
+    if(action==='dividend-reload'){await loadDividends();return;}
+    if(action==='entry-environment-refresh'||action==='entry-environment-direct'){
+      const asof=state.entryPlan?.as_of;
+      const age=asof?Math.floor((Date.parse(localDate())-Date.parse(asof))/86400000):NaN;
+      const fresh=age>=0&&age<=4;
+      state.dividendJob=await api('refresh_dividends',action==='entry-environment-direct',Boolean(fresh));render();return;
+    }
+    if(action==='dividend-refresh'||action==='dividend-direct'){
+      state.dividendJob=await api('refresh_dividends',action==='dividend-direct');render();return;
+    }
+    if(action==='dividend-cancel'){state.dividendJob=await api('cancel_dividends');render();return;}
     if(action==='import') {
       if(state.busy)return;state.busy=true;toast('请选择包含报告的目录…');
       try {const result=await api('import_reports');if(!result.cancelled){await refreshData();render();toast(`已导入 ${result.added} 份，跳过重复 ${result.skipped} 份${result.errors.length?`，${result.errors.length} 份读取失败（请检查编码和文件格式）`:''}`);}}finally{state.busy=false;}
@@ -240,15 +450,25 @@
       else if(button.dataset.section){state.section=button.dataset.section;render();}
       else if(button.dataset.source)revealSource(button.dataset.source);
       else if(button.dataset.holding)showHolding(button.dataset.holding);
-      else if(button.dataset.action)await act(button.dataset.action);
+      else if(button.dataset.action)await act(button.dataset.action,button);
     } catch(error){toast(error.message,true);}
   });
   document.addEventListener('submit',async event=>{
+    if(event.target.id==='dividend-filters'){event.preventDefault();if(!event.target.checkValidity()){event.target.reportValidity();return;}state.dividendCriteria=Object.fromEntries(new FormData(event.target));render();return;}
     event.preventDefault();const form=event.target;if(!form.checkValidity()){showValidation(form);return;}clearValidation(form);
     const submit=form.querySelector('[type=submit]');if(submit)submit.disabled=true;
     try {
       const values=Object.fromEntries(new FormData(form));
-      if(form.id==='analysis-form'){rememberDrafts();state.task=await api('start_analysis',values);renderTask();toast('分析已在后台启动，可继续浏览历史。');}
+      if(form.id==='entry-preferences-form'){
+        await api('save_entry_preferences',values);
+        for(const key of ['entry-capital','entry-target','entry-position','entry-horizon'])delete state.drafts[key];
+        await loadEntryPlan(false);toast('个人计划已保存。');
+      }
+      else if(form.classList.contains('dividend-note-form')){
+        state.dividendWatches=await api('save_dividend_watch',form.dataset.code,form.dataset.name,values.note);
+        delete state.drafts[`dividend-note-${form.dataset.code}`];toast('自选备注已保存。');
+      }
+      else if(form.id==='analysis-form'){rememberDrafts();state.task=await api('start_analysis',values);renderTask();toast('分析已在后台启动，可继续浏览历史。');}
       else if(form.id==='settings-form'){state.settings=await api('save_settings',values);for(const key of ['analysis-quick','analysis-deep','analysis-url','analysis-provider'])delete state.drafts[key];toast('默认模型已保存。');}
       else if(form.id==='credential-form'){await api('save_credential',values.provider,values.key);form.elements.key.value='';toast('已保存到系统凭据库。');$('#credential-status').textContent='已保存，下次分析使用新凭据。';}
       else if(form.id==='decision-form'){await api('save_decision',state.report.id,values.action,values.reason);delete state.drafts[`decision-reason-${state.report.id}`];await refreshData();render();toast('个人判断已记录，实际持仓未自动变更。');}
@@ -272,6 +492,7 @@
     try {
       const [task, library]=await Promise.all([api('task_status'),api('library_status')]);
       state.task=task;state.library=library;renderTask();
+      await pollDividends();
       const statusKey=`${state.task.id}:${state.task.status}`;
       const taskChanged=statusKey!==seenTaskStatus;
       const libraryChanged=library.revision!==seenLibraryRevision;
@@ -290,7 +511,7 @@
   }
   async function start() {
     bridge=window.pywebview?.api;if(!bridge)return;
-    try {const data=await api('bootstrap');Object.assign(state,data,{allReports:data.reports,theme:data.theme||'dark'});document.documentElement.dataset.theme=state.theme;seenTaskStatus=`${state.task.id}:${state.task.status}`;seenLibraryRevision=state.library.revision;render();clearTimeout(pollTimer);poll();}catch(error){$('#connection-note').textContent=error.message;toast(error.message,true);}
+    try {const data=await api('bootstrap');Object.assign(state,data,{allReports:data.reports,theme:data.theme||'dark'});document.documentElement.dataset.theme=state.theme;seenTaskStatus=`${state.task.id}:${state.task.status}`;seenLibraryRevision=state.library.revision;render();loadEntryPlan();clearTimeout(pollTimer);poll();}catch(error){$('#connection-note').textContent=error.message;toast(error.message,true);}
   }
   new ResizeObserver(()=>document.documentElement.style.setProperty('--topbar-height',`${$('.topbar').offsetHeight}px`)).observe($('.topbar'));
   window.addEventListener('pywebviewready',start,{once:true});

@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import json
+import math
 import os
+import threading
 import webbrowser
+from datetime import date, datetime
 from functools import wraps
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from tradingagents.dataflows.dividend_screen import annual_snapshot
+from tradingagents.desktop.dividends import DividendJobs
+from tradingagents.desktop.planning import strategy_plan, validate_preferences
 from tradingagents.desktop.reports import export_markdown
-from tradingagents.desktop.store import DesktopStore
+from tradingagents.desktop.store import DesktopStore, now
 from tradingagents.desktop.tasks import TaskManager, validate_request
 from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV
 
@@ -26,12 +33,131 @@ def response(method):
     return wrapped
 
 
+def validate_dividend_snapshot(data):
+    """Reject incomplete snapshots before they can break the desktop renderer."""
+    if not isinstance(data, dict) or data.get('schema_version') not in (1, 2):
+        raise ValueError('unsupported snapshot')
+    if not isinstance(data.get('items'), list):
+        raise ValueError('invalid items')
+    for field in ('generated_at', 'as_of', 'coverage', 'rules', 'limitations'):
+        if not isinstance(data.get(field), str) or not data[field].strip():
+            raise ValueError('missing snapshot metadata')
+    generated = datetime.fromisoformat(data['generated_at'])
+    if generated.tzinfo is None:
+        raise ValueError('missing timestamp timezone')
+    date.fromisoformat(data['as_of'])
+    if type(data.get('require_qualifications')) is not bool:
+        raise ValueError('invalid qualification policy')
+    statuses = {'pass', 'pending', 'fail'}
+    changes = data.get('changes')
+    if changes is not None:
+        if not isinstance(changes, dict) or not isinstance(changes.get('items'), list):
+            raise ValueError('invalid changes')
+        previous_at = changes.get('previous_at')
+        if previous_at is not None and (
+                not isinstance(previous_at, str)
+                or datetime.fromisoformat(previous_at).tzinfo is None):
+            raise ValueError('invalid change timestamp')
+        for item in changes['items']:
+            if (not isinstance(item, dict)
+                    or item.get('kind') not in {'entered', 'exited', 'updated'}
+                    or not all(isinstance(item.get(k), str) for k in ('code', 'name'))
+                    or not isinstance(item.get('reasons'), list)
+                    or not all(isinstance(reason, str) for reason in item['reasons'])):
+                raise ValueError('invalid change item')
+    for row in data['items']:
+        if not isinstance(row, dict):
+            raise ValueError('invalid candidate')
+        for field in ('code', 'name', 'sector'):
+            if not isinstance(row.get(field), str) or not row[field].strip():
+                raise ValueError('missing candidate identity')
+        if row.get('status') not in statuses or not isinstance(row.get('metrics'), dict):
+            raise ValueError('invalid candidate status or metrics')
+        for field in ('yield_pct', 'yield_ttm_pct', 'dividend_annual', 'dividend_ttm', 'price', 'market_cap_yi', 'pe_annual', 'volatility_1y_pct',
+                      'volatility_3y_pct', 'max_drawdown_1y_pct', 'max_drawdown_3y_pct',
+                      'turnover_20d_yi'):
+            value = row['metrics'].get(field)
+            if value is not None and (
+                type(value) not in (int, float) or not math.isfinite(value)
+            ):
+                raise ValueError('invalid numeric metric')
+        if not isinstance(row.get('checks'), list) or not row['checks']:
+            raise ValueError('missing checks')
+        for check in row['checks']:
+            if not isinstance(check, dict) or check.get('status') not in statuses:
+                raise ValueError('invalid check')
+            if not all(isinstance(check.get(key), str) for key in ('label', 'detail')):
+                raise ValueError('invalid check description')
+            if type(check.get('required')) is not bool:
+                raise ValueError('invalid check requirement')
+        sources, errors = row.get('sources', {}), row.get('errors', [])
+        if not isinstance(sources, dict) or not all(isinstance(v, str) for v in sources.values()):
+            raise ValueError('invalid sources')
+        if not isinstance(errors, list) or not all(isinstance(v, str) for v in errors):
+            raise ValueError('invalid errors')
+        notes = row.get('risk_notes', [])
+        if not isinstance(notes, list) or not all(isinstance(v, str) for v in notes):
+            raise ValueError('invalid risk notes')
+
+    if data['schema_version'] == 2:
+        discovery = data.get('discovery')
+        if not isinstance(discovery, dict) or discovery.get('scope') not in ('all_a', 'subset'):
+            raise ValueError('missing discovery manifest')
+        codes = discovery.get('candidate_codes')
+        actual = [row['code'] for row in data['items']]
+        if (not isinstance(codes, list)
+                or not all(isinstance(code, str) and len(code) == 6 and code.isascii()
+                           and code.isdigit() for code in codes + actual)
+                or len(set(actual)) != len(actual)
+                or sorted(codes) != sorted(actual)):
+            raise ValueError('incomplete discovery manifest')
+        for key in ('scanned', 'excluded_small_cap', 'unknown_cap', 'evaluated',
+                    'risk_complete', 'provider_error_count'):
+            if type(discovery.get(key)) is not int or discovery[key] < 0:
+                raise ValueError('invalid discovery counts')
+        if (discovery['evaluated'] != len(actual)
+                or discovery['scanned'] < len(actual) + discovery['excluded_small_cap']
+                or discovery['risk_complete'] > len(actual)
+                or discovery['provider_error_count'] > len(actual)
+                or discovery['unknown_cap'] > discovery['scanned']):
+            raise ValueError('inconsistent discovery counts')
+        if discovery['scope'] == 'all_a' and (
+                discovery['scanned'] < 4000
+                or discovery['scanned'] != len(actual) + discovery['excluded_small_cap']):
+            raise ValueError('incomplete all-A scan')
+        if data['require_qualifications']:
+            raise ValueError('obsolete qualification policy')
+        roster = discovery.get('roster')
+        if roster is not None:
+            if not isinstance(roster, dict) or roster.get('status') not in {
+                    'confirmed', 'unconfirmed'}:
+                raise ValueError('invalid roster status')
+            for key in ('expected', 'observed'):
+                if type(roster.get(key)) is not int or roster[key] < 0:
+                    raise ValueError('invalid roster counts')
+            for key in ('missing_quote_codes', 'unlisted_quote_codes'):
+                values = roster.get(key)
+                if (not isinstance(values, list) or not all(
+                        isinstance(code, str) and len(code) == 6 and code.isascii()
+                        and code.isdigit() for code in values)
+                        or len(values) != len(set(values))):
+                    raise ValueError('invalid roster codes')
+            if (roster['expected'] + len(roster['unlisted_quote_codes'])
+                    != roster['observed'] + len(roster['missing_quote_codes'])):
+                raise ValueError('inconsistent roster reconciliation')
+            if discovery['scope'] == 'all_a' and not set(
+                    roster['missing_quote_codes']).issubset(actual):
+                raise ValueError('missing quotes must remain candidates')
+
+
 class DesktopAPI:
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library
         self._window = None
         self._tasks = TaskManager(store, environment_builder=self._credential_environment)
+        self._dividends = DividendJobs(store)
+        self._watch_lock = threading.RLock()
 
     @staticmethod
     def _credential_environment(provider):
@@ -65,6 +191,84 @@ class DesktopAPI:
             'providers': list(PROVIDER_API_KEY_ENV), 'theme': self._store.setting('theme') or 'dark',
             'data_directory': str(self._store.directory),
         }
+
+    @response
+    def dividend_status(self):
+        return self._dividends.status()
+
+    @response
+    def set_dividend_auto_update(self, enabled):
+        return self._dividends.set_auto_update(enabled)
+
+    @response
+    def refresh_dividends(self, direct=False, environment_only=False):
+        return self._dividends.start(direct, environment_only)
+
+    @response
+    def cancel_dividends(self):
+        return self._dividends.cancel()
+
+    @response
+    def dividend_watchlist(self):
+        with self._watch_lock:
+            return self._store.setting('dividend_watchlist') or []
+
+    @response
+    def save_dividend_watch(self, code, name, note=None):
+        if (not isinstance(code, str) or len(code) != 6
+                or not code.isascii() or not code.isdigit()):
+            raise ValueError('请输入六位A股代码。')
+        if not isinstance(name, str) or not name.strip() or len(name) > 80:
+            raise ValueError('股票名称无效。')
+        if note is not None and (not isinstance(note, str) or len(note) > 2000):
+            raise ValueError('备注最多2000字。')
+        with self._watch_lock:
+            rows = self._store.setting('dividend_watchlist') or []
+            row = next((r for r in rows if r['code'] == code), None)
+            if row is None:
+                row = {'code': code, 'name': name.strip(), 'note': '', 'added_at': now()}
+                rows.append(row)
+            if note is not None:
+                row['note'] = note
+            return self._store.setting('dividend_watchlist', rows)
+
+    @response
+    def remove_dividend_watch(self, code):
+        with self._watch_lock:
+            rows = self._store.setting('dividend_watchlist') or []
+            return self._store.setting('dividend_watchlist', [r for r in rows if r['code'] != code])
+
+    @response
+    def dividend_screen(self):
+        return self._read_dividend_screen()
+
+    def _read_dividend_screen(self):
+        path = self._store.directory / 'dividend-screen.json'
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding='utf-8'))
+            validate_dividend_snapshot(data)
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError('高股息快照格式无效，请点击“刷新筛选”重新获取。') from exc
+        return annual_snapshot(data, self._store.directory / 'dividend-cache',
+                               self._store.directory / 'dividend-official-evidence.json')
+
+    @response
+    def entry_plan(self):
+        preferences = self._store.setting('entry_preferences')
+        snapshot = self._read_dividend_screen()
+        strategy = strategy_plan(snapshot, preferences, self._store.holdings())
+        return {
+            'preferences': preferences,
+            'as_of': snapshot['as_of'] if snapshot else None,
+            'generated_at': snapshot['generated_at'] if snapshot else None,
+            **strategy,
+        }
+
+    @response
+    def save_entry_preferences(self, values):
+        return self._store.setting('entry_preferences', validate_preferences(values))
 
     @response
     def list_reports(self, query='', rating='', offset=0):

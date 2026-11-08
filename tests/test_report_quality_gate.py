@@ -19,9 +19,9 @@ def test_review_report_keeps_validation_scope_visible(tmp_path):
              'final_rating': 'REVIEW', 'final_trade_decision': 'Failed validation; review evidence',
              'report_validation': {'fundamentals': {'status': 'failed', 'issues': ['bad reference']}}}
     output = write_report_tree(state, '600941.SH', tmp_path)
-    assert 'Fact contract checks' in output.read_text()
-    assert 'not economic correctness' in output.read_text()
-    assert 'Fact contract checks' in (tmp_path / 'complete_report.html').read_text()
+    assert 'Fact contract checks' in output.read_text(encoding='utf-8')
+    assert 'not economic correctness' in output.read_text(encoding='utf-8')
+    assert 'Fact contract checks' in (tmp_path / 'complete_report.html').read_text(encoding='utf-8')
 
 
 def test_compiled_graph_keeps_legacy_state_and_merges_parallel_checks():
@@ -65,12 +65,12 @@ def test_completed_report_renders_source_facts_once_at_exit(tmp_path):
              'fundamentals_evidence': {'filing': {'tool': 'filing', 'args': {},
                  'status': 'available', 'content': 'Original', **artifact}}}
     output = write_report_tree(state, '600941.SH', tmp_path)
-    content = output.read_text()
+    content = output.read_text(encoding='utf-8')
     assert content.count('| Fact ID |') == 1
     for value in ('-1454.6', '万户', '2026Q3', 'quarter flow', '期末存量不等于期间净增', 'unverified'):
         assert value in content
-        assert value in (tmp_path / 'complete_report.html').read_text()
-    assert '| Fact ID |' not in (tmp_path / '1_analysts/fundamentals.md').read_text()
+        assert value in (tmp_path / 'complete_report.html').read_text(encoding='utf-8')
+    assert '| Fact ID |' not in (tmp_path / '1_analysts/fundamentals.md').read_text(encoding='utf-8')
     assert (tmp_path / '6_evidence/facts.md').exists()
     write_report_tree({**state, 'fundamentals_evidence': {}}, '600941.SH', tmp_path)
     assert not (tmp_path / '6_evidence/facts.md').exists()
@@ -86,4 +86,4 @@ def test_invalid_artifact_cannot_publish_directional_fact_appendix(tmp_path):
         write_report_tree(state, '600941.SH', target)
     assert not target.exists()
     write_report_tree({**state, 'final_rating': 'REVIEW'}, '600941.SH', target)
-    assert 'no values published' in (target / '6_evidence/facts.md').read_text()
+    assert 'no values published' in (target / '6_evidence/facts.md').read_text(encoding='utf-8')

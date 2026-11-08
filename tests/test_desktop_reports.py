@@ -77,7 +77,7 @@ def test_import_is_snapshot_deduplicated_and_compares_same_day_versions(tmp_path
     assert store.import_directory(source)['added'] == 0
     (source / '5_portfolio/decision.md').write_text(DECISION.replace('Underweight', 'Hold'), encoding='utf-8')
     (source / 'complete_report.md').write_text('changed', encoding='utf-8')
-    (source / 'run_metadata.json').write_text(json.dumps({'ticker': '600941.SS', 'analysis_date': '2026-11-05'}))
+    (source / 'run_metadata.json').write_text(json.dumps({'ticker': '600941.SS', 'analysis_date': '2026-11-05'}), encoding='utf-8')
     assert store.import_directory(source)['added'] == 1
     reports = store.list_reports()
     assert len(reports) == 2
@@ -89,18 +89,30 @@ def test_import_is_snapshot_deduplicated_and_compares_same_day_versions(tmp_path
     assert store.get_report(reports[1]['id'])['rating'] == 'Underweight'
 
 
-def test_bad_report_does_not_abort_import_and_paths_are_not_followed(tmp_path):
+def test_bad_report_does_not_abort_import(tmp_path):
     source = tmp_path / 'source'
     sample_report(source / 'good')
     bad = source / 'bad'
     bad.mkdir()
     (bad / 'complete_report.md').write_bytes(b'\xff')
-    outside = sample_report(tmp_path / 'outside', date='2026-11-04')
-    (source / 'linked').symlink_to(outside, target_is_directory=True)
     store = DesktopStore(tmp_path / 'app')
     result = store.import_directory(source)
     assert result['added'] == 1
     assert len(result['errors']) == 1
+
+
+def test_import_does_not_follow_directory_symlinks(tmp_path):
+    source = tmp_path / 'source'
+    sample_report(source / 'good')
+    outside = sample_report(tmp_path / 'outside', date='2026-11-04')
+    try:
+        (source / 'linked').symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if getattr(exc, 'winerror', None) == 1314:
+            pytest.skip('Windows account lacks symbolic-link privilege')
+        raise
+    store = DesktopStore(tmp_path / 'app')
+    assert store.import_directory(source)['added'] == 1
 
 
 def test_decisions_do_not_modify_holdings_and_unchanged_snapshot_is_noop(tmp_path):
@@ -132,7 +144,7 @@ def test_search_paging_and_invalid_id(tmp_path):
 def test_review_header_is_preserved_when_legacy_decision_still_says_buy(tmp_path):
     source = sample_report(tmp_path / 'source', DECISION.replace('Underweight', 'Buy'))
     report_path = source / 'complete_report.md'
-    report_path.write_text(report_path.read_text() + '\n- Rating: REVIEW\n')
+    report_path.write_text(report_path.read_text(encoding='utf-8') + '\n- Rating: REVIEW\n', encoding='utf-8')
     store = DesktopStore(tmp_path / 'app')
     store.import_directory(source)
     assert store.list_reports()[0]['rating'] == 'REVIEW'
@@ -154,7 +166,7 @@ def test_overview_and_combined_history_are_not_limited_to_first_hundred(tmp_path
         source = sample_report(tmp_path / f'report-{i}', date=(date(2026, 1, 1) + timedelta(days=i)).isoformat())
         if i == 0:
             file = source / 'complete_report.md'
-            file.write_text(file.read_text().replace('600941.SS', 'MSFT'))
+            file.write_text(file.read_text(encoding='utf-8').replace('600941.SS', 'MSFT'), encoding='utf-8')
         store.import_directory(source)
     pending = store.pending_reports()
     assert {r['ticker'] for r in pending} == {'MSFT', '600941.SS'}
@@ -202,11 +214,11 @@ def test_state_rating_and_evidence_corrections_create_new_snapshot(tmp_path):
     logs = source / 'logs/AAPL/TradingAgentsStrategy_logs'
     logs.mkdir(parents=True)
     state_file = logs / 'full_states_log_2026-11-05.json'
-    state_file.write_text(json.dumps({'final_rating': 'Buy'}))
+    state_file.write_text(json.dumps({'final_rating': 'Buy'}), encoding='utf-8')
     store = DesktopStore(tmp_path / 'app')
     store.import_directory(source)
     state_file.write_text(json.dumps({'final_rating': 'REVIEW',
-        'news_evidence': {'news': {'status': 'unavailable', 'content': 'Corrected source'}}}))
+        'news_evidence': {'news': {'status': 'unavailable', 'content': 'Corrected source'}}}), encoding='utf-8')
     assert store.import_directory(source)['added'] == 1
     doc = store.get_report(store.list_reports()[0]['id'])
     assert doc['rating'] == 'REVIEW'

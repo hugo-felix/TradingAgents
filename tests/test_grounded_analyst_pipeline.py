@@ -22,6 +22,7 @@ def test_invalid_reference_is_repaired_while_source_values_remain_in_artifacts(m
         'fact_ids': ['invented#' + wrong_value]}]}, ensure_ascii=False)
     monkeypatch.setattr(fundamentals_analyst, 'take_turn', lambda *a: (AIMessage(draft), draft))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value = AIMessage(json.dumps({'summary': '连接变化需要跟踪', 'points': [
         {'kind': 'analysis', 'text': '结合原始净增观察变化', 'fact_ids': ['fundamentals:get_company_operating_history:1#net']},
     ]}, ensure_ascii=False))
@@ -42,6 +43,7 @@ def test_failed_repair_publishes_failure_and_retains_original_evidence(monkeypat
                         SourceResult('Original source', (fact,) if method == 'get_company_operating_history' else ()))
     monkeypatch.setattr(fundamentals_analyst, 'take_turn', lambda *a: (AIMessage('Unvalidated 123'), 'Unvalidated 123'))
     llm = Mock()
+    llm.with_structured_output.side_effect = NotImplementedError
     llm.invoke.return_value = AIMessage('Still invalid 456')
     output = _analyst_graph(ANALYST_NODE_SPECS['fundamentals'], fundamentals_analyst.create_fundamentals_analyst(llm), 1).invoke({
         'company_of_interest': '600941.SH', 'trade_date': '2026-11-05', 'messages': [], 'report_contract_version': 1, 'report_validation': {},

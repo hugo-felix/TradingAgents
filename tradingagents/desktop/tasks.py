@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import signal
 import subprocess
 import sys
 import threading
+from contextlib import suppress
 from datetime import date
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -19,6 +21,13 @@ from tradingagents.llm_clients.api_key_env import PROVIDER_API_KEY_ENV
 
 EVENT_PREFIX = 'TA_DESKTOP_EVENT:'
 REQUEST_KEYS = {'ticker', 'date', 'provider', 'quick_model', 'deep_model', 'backend_url'}
+PROGRESS_STEPS = (
+    ('initialize', '初始化引擎'), ('market_report', '行情分析'),
+    ('fundamentals_report', '基本面分析'), ('news_report', '新闻分析'),
+    ('sentiment_report', '情绪分析'), ('investment_plan', '多空研究与结论'),
+    ('trader_investment_plan', '制定交易计划'), ('final_trade_decision', '风险评审与最终决策'),
+    ('publish', '保存并发布报告'),
+)
 
 
 def validate_request(request: dict) -> dict:
@@ -53,7 +62,10 @@ def worker_command(request_path: Path) -> list[str]:
 
 
 class TaskManager:
-    def __init__(self, store: DesktopStore, command_builder=None, environment_builder=None):
+    def __init__(self, store: DesktopStore, command_builder=None, environment_builder=None,
+                 idle_timeout=900, total_timeout=3600):
+        self.idle_timeout = idle_timeout
+        self.total_timeout = total_timeout
         self.store = store
         self.command_builder = command_builder or worker_command
         self.environment_builder = environment_builder
@@ -62,15 +74,18 @@ class TaskManager:
         self.thread = None
         self.current = store.setting('task') or {'status': 'idle'}
         if self.current['status'] in {'running', 'cancelling'}:
-            self.current.update(status='interrupted', phase='上次运行已中断，可重新分析')
+            self.current.update(status='interrupted', phase='上次运行已中断，可重新分析',
+                                finished_at=self.current.get('last_activity_at'))
             self._persist()
 
     def _persist(self):
+        if self.current['status'] in {'running', 'cancelling'}:
+            self.current['last_activity_at'] = now()
         self.store.setting('task', self.current)
 
     def status(self):
         with self.lock:
-            return {**self.current}
+            return copy.deepcopy(self.current)
 
     def start(self, request: dict):
         request = validate_request(request)
@@ -97,13 +112,35 @@ class TaskManager:
                 'id': run_id, 'status': 'running', 'ticker': request['ticker'], 'date': request['date'],
                 'phase': '正在初始化分析引擎', 'started_at': now(), 'started_epoch': time(),
                 'request': request,
+                'progress': [{'id': key, 'title': title,
+                              'status': 'running' if key == 'initialize' else 'pending'}
+                             for key, title in PROGRESS_STEPS],
+                'phase_started_epoch': time(),
             }
+            self._last_progress = monotonic()
+            self._started = self._last_progress
             self._persist()
-            self.thread = threading.Thread(target=self._monitor, args=(self.process, folder), daemon=True)
+            stopped = threading.Event()
+            threading.Thread(target=self._watchdog, args=(self.process, stopped), daemon=True).start()
+            self.thread = threading.Thread(target=self._monitor, args=(self.process, folder, stopped), daemon=True)
             self.thread.start()
             return self.status()
 
-    def _monitor(self, process, folder):
+    def _watchdog(self, process, stopped):
+        # A separate thread is essential: stdout iteration blocks during stalled calls.
+        while not stopped.wait(min(1, self.idle_timeout / 4, self.total_timeout / 4)):
+            with self.lock:
+                if process is not self.process or self.current['status'] != 'running':
+                    return
+                elapsed = monotonic() - self._started
+                idle = monotonic() - self._last_progress
+                if elapsed < self.total_timeout and idle < self.idle_timeout:
+                    continue
+                self.current['error_kind'] = 'TaskTimeout'
+                self.cancel()
+                return
+
+    def _monitor(self, process, folder, stopped):
         error_kind = ''
         try:
             for line in process.stdout:
@@ -113,18 +150,45 @@ class TaskManager:
                     event = json.loads(line[len(EVENT_PREFIX):])
                 except ValueError:
                     continue
+                if not isinstance(event, dict):
+                    continue
                 with self.lock:
                     if self.current['status'] != 'running':
                         continue
-                    if event.get('type') == 'phase':
+                    if event.get('type') == 'activity':
+                        # Real call boundaries count as progress; no timer heartbeat
+                        # can keep a stuck request alive indefinitely.
+                        self._last_progress = monotonic()
+                        self._persist()
+                    elif event.get('type') == 'phase':
+                        self._last_progress = monotonic()
                         self.current['phase'] = str(event.get('phase', '分析中'))[:100]
+                        completed = event.get('completed', [])
+                        active = event.get('active', [])
+                        if ('completed' in event and 'active' in event
+                                and isinstance(completed, list) and isinstance(active, list)):
+                            previous = [step['id'] for step in self.current['progress']
+                                        if step['status'] == 'running']
+                            for step in self.current['progress']:
+                                if step['id'] in completed and step['id'] != 'publish':
+                                    step['status'] = 'completed'
+                                elif step['status'] != 'completed':
+                                    step['status'] = 'running' if step['id'] in active else 'pending'
+                            current = [step['id'] for step in self.current['progress']
+                                       if step['status'] == 'running']
+                            if current != previous:
+                                self.current['phase_started_epoch'] = time()
+                        self._persist()
                     elif event.get('type') == 'error':
                         # Only worker-controlled error class names; no prompts or API responses.
                         error_kind = str(event.get('kind', '')) if str(event.get('kind', '')).isidentifier() else ''
             code = process.wait()
             with self.lock:
                 if self.current['status'] == 'cancelling':
-                    self.current.update(status='cancelled', phase='分析已取消，未发布新报告')
+                    if self.current.get('error_kind') == 'TaskTimeout':
+                        self.current.update(status='failed', phase='分析超时：15 分钟未收到阶段进展或总耗时超过 60 分钟，已停止任务；请检查模型与数据源后重试')
+                    else:
+                        self.current.update(status='cancelled', phase='分析已取消，未发布新报告')
                 elif code != 0:
                     self.current.update(status='failed', phase='分析失败，请检查模型配置、凭据及数据源后重试', error_kind=error_kind)
                 elif not (folder / 'complete_report.md').is_file():
@@ -136,13 +200,25 @@ class TaskManager:
                     else:
                         report_id = imported['ids'][0]
                         self.current.update(status='completed', phase='报告已保存', report_id=report_id)
+                        for step in self.current['progress']:
+                            if step['id'] == 'publish':
+                                step['status'] = 'completed'
                 self.current['finished_at'] = now()
                 self._persist()
+                with suppress(OSError), (folder / 'diagnostics.jsonl').open(
+                    'a', encoding='utf-8'
+                ) as log:
+                    log.write(json.dumps({
+                        'time': now(), 'event': 'process_end', 'exit_code': code,
+                        'status': self.current['status'],
+                        'error_kind': self.current.get('error_kind', error_kind),
+                    }) + '\n')
         except Exception:
             with self.lock:
                 self.current.update(status='failed', phase='后台任务异常结束，请重试', finished_at=now())
                 self._persist()
         finally:
+            stopped.set()
             if process.stdout:
                 process.stdout.close()
 

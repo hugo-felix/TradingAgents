@@ -56,6 +56,12 @@ def test_older_glm_does_not_receive_effort_by_default(model, monkeypatch):
     assert "reasoning_effort" not in make_llm(monkeypatch, model)._get_request_payload("hello")
 
 
+@pytest.mark.parametrize("model", ["glm-5.3", "glm-5.3-flash"])
+def test_glm53_defaults_to_bounded_thinking_and_preserves_explicit_effort(model, monkeypatch):
+    assert make_llm(monkeypatch, model)._get_request_payload("hello")["reasoning_effort"] == "low"
+    assert make_llm(monkeypatch, model, reasoning_effort="max")._get_request_payload("hello")["reasoning_effort"] == "max"
+
+
 @pytest.mark.parametrize("prompt", ["Analyze supplied evidence", [HumanMessage(content="Analyze supplied evidence")], ChatPromptTemplate.from_messages([("user", "Analyze supplied evidence")]).invoke({})])
 def test_glm_json_output_sends_schema_and_parses_mocked_response(prompt, monkeypatch):
     requests = []

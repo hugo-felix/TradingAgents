@@ -31,7 +31,7 @@ def test_source_tools_inject_run_identity_and_clamp_future_dates(monkeypatch, na
 def test_new_sources_are_only_offered_to_a_share_fundamentals(monkeypatch, ticker):
     for module in (fundamentals_analyst, news_analyst):
         seen = []
-        monkeypatch.setattr(module, 'take_turn', lambda prompt, llm, offered, messages, seen=seen:
+        monkeypatch.setattr(module, 'take_turn', lambda prompt, llm, offered, messages, grounded=False, seen=seen:
                             (seen.extend(t.name for t in offered) or AIMessage('report'), 'report'))
         factory = module.create_fundamentals_analyst if module is fundamentals_analyst else module.create_news_analyst
         factory(None)({'company_of_interest': ticker, 'trade_date': '2026-11-05', 'messages': []})

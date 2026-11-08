@@ -230,3 +230,6 @@ artifacts/
 !desktop/desktop.spec
 /output/
 /desktop/assets/icon-*.png
+
+# Local desktop workspace: database, user state, and WebView2 caches.
+/data/desktop/

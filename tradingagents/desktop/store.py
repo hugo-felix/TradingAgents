@@ -270,8 +270,11 @@ class DesktopStore:
 
     def pending_reports(self, limit=100, offset=0):
         """Latest research per ticker without a personal judgment on that version."""
+        from tradingagents.report_language import reading_text
+
         with self.connect() as db:
-            return [dict(row) for row in db.execute('''
+            return [{**dict(row), 'display_conclusion': reading_text(row['conclusion'] or '')}
+                    for row in db.execute('''
                 SELECT r.id,canonical_ticker(r.ticker) AS ticker,r.date,r.rating,r.imported_at,
                        COALESCE(NULLIF(stock_name(r.ticker),''),json_extract(r.document,'$.name')) AS name,
                        json_extract(r.document,'$.summary.conclusion.text') AS conclusion,

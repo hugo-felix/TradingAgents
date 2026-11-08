@@ -6,7 +6,7 @@ from tradingagents.desktop.store import DesktopStore
 
 def project_at(root):
     root.mkdir(parents=True)
-    (root / 'pyproject.toml').write_text('[project]\nname="tradingagents"')
+    (root / 'pyproject.toml').write_text('[project]\nname="tradingagents"', encoding='utf-8')
     (root / 'tradingagents').mkdir()
     return root
 
@@ -37,7 +37,7 @@ def test_startup_loads_existing_reports_and_rescans_only_changed_files(tmp_path,
     assert library.scan_once()['added'] == 0
     assert library.status()['revision'] == revision
     monkeypatch.setattr(store, '_read', original_read)
-    (source / '5_portfolio/decision.md').write_text(DECISION.replace('Underweight', 'Hold'))
+    (source / '5_portfolio/decision.md').write_text(DECISION.replace('Underweight', 'Hold'), encoding='utf-8')
     assert library.scan_once()['added'] == 1
     assert len(store.list_reports()) == 2
     assert library.status()['revision'] > revision
@@ -52,7 +52,7 @@ def test_selected_report_directory_is_remembered_after_moving_application(tmp_pa
     assert first.scan_once()['added'] == 1
     second = ReportLibrary(store, [], settle_seconds=0)
     assert str(source.parent.resolve()) in second.status()['directories']
-    (source / '5_portfolio/decision.md').write_text(DECISION.replace('Underweight', 'Buy'))
+    (source / '5_portfolio/decision.md').write_text(DECISION.replace('Underweight', 'Buy'), encoding='utf-8')
     assert second.scan_once()['added'] == 1
 
 
@@ -123,7 +123,7 @@ def test_bootstrap_does_not_acknowledge_a_revision_newer_than_its_report_list(tm
 
 def test_invalid_json_shapes_are_isolated_from_later_valid_reports(tmp_path):
     bad = sample_report(tmp_path / 'reports/a-bad')
-    (bad / 'run_metadata.json').write_text('[]')
+    (bad / 'run_metadata.json').write_text('[]', encoding='utf-8')
     sample_report(tmp_path / 'reports/z-good')
     store = DesktopStore(tmp_path / 'workspace')
     library = ReportLibrary(store, [bad.parent], settle_seconds=0)

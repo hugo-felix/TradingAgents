@@ -129,7 +129,14 @@ def _a_share_sentiment(llm, state, start_date, end_date):
     else:
         narrative = missing + '\n' + narrative
         if grounded_run_enabled(state):
-            checks = {'report_validation': {'social': {'status': 'skipped', 'issues': ['No readable discussion bodies'], 'repaired': False}}}
+            if discussion['status'] == 'withheld':
+                reason = ('历史讨论缺少当时快照，已跳过；可使用今天的日期研究当前讨论。' if chinese else
+                          'Historical discussion snapshots cannot be verified; use today for current discussions.')
+            else:
+                reason = (f"讨论正文不可用（{discussion['status']}），已跳过；详见来源记录。" if chinese else
+                          f"Discussion bodies unavailable ({discussion['status']}); see source records.")
+            checks = {'report_validation': {'social': {
+                'status': 'skipped', 'issues': [reason], 'repaired': False}}}
     report = '\n\n'.join([header, limits, sources[0].content, narrative, source_coverage(evidence)])
     return {'messages': [AIMessage(content=report)], 'sentiment_report': report, 'sentiment_evidence': evidence, **checks}
 

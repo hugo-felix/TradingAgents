@@ -58,13 +58,22 @@ def collect_tool_evidence(role: str, messages) -> dict:
     evidence, counts = {}, Counter()
     tool_messages = [message for message in messages if isinstance(message, ToolMessage)]
     sources = []
+    seen = set()
     for message in tool_messages:
         call = calls.get(message.tool_call_id, {})
         name = message.name or call.get('name', 'unknown_tool')
         raw = message.content if isinstance(message.content, str) else json.dumps(message.content, ensure_ascii=False)
+        counts[name] += 1
+        source_id = f'{role}:{name}:{counts[name]}'
+        args = message.additional_kwargs.get('source_args', call.get('args', {}))
+        identity = (name, json.dumps(args, sort_keys=True), raw, _status(message, raw),
+                    json.dumps(message.artifact, sort_keys=True))
+        if identity in seen:
+            continue
+        seen.add(identity)
         # Raw OHLCV can span years; exact price claims use the verified snapshot.
         cap = 1800 if role == 'market' and name == 'get_stock_data' else MAX_SOURCE_CONTENT
-        sources.append((message, call, name, raw, min(len(raw), cap)))
+        sources.append((message, args, name, raw, min(len(raw), cap), source_id))
 
     # Water-fill the content budget: small sources retain their complete text,
     # and their unused shares remain available to longer original disclosures.
@@ -77,12 +86,11 @@ def collect_tool_evidence(role: str, messages) -> dict:
             budgets[index] = min(budgets[index], remaining // (len(ordered) - position))
             remaining -= budgets[index]
 
-    for (message, call, name, raw, _), limit in zip(sources, budgets, strict=True):
-        counts[name] += 1
+    for (message, args, name, raw, _, source_id), limit in zip(sources, budgets, strict=True):
         content = _bounded(raw, limit)
         row = {
             'tool': name,
-            'args': message.additional_kwargs.get('source_args', call.get('args', {})),
+            'args': args,
             'status': _status(message, raw),
             'content': content,
         }
@@ -90,7 +98,7 @@ def collect_tool_evidence(role: str, messages) -> dict:
             artifact = message.artifact if isinstance(message.artifact, dict) else {}
             row['fact_schema_version'] = artifact.get('fact_schema_version')
             row['facts'] = artifact.get('facts')
-        evidence[f'{role}:{name}:{counts[name]}'] = row
+        evidence[source_id] = row
     return evidence
 
 

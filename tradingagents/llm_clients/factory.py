@@ -101,7 +101,7 @@ def build_llm_kwargs(config: dict) -> dict[str, Any]:
         if thinking_level:
             kwargs["thinking_level"] = thinking_level
 
-    elif provider in REASONING_EFFORT_PROVIDERS:
+    elif provider in REASONING_EFFORT_PROVIDERS or provider == "openai_compatible":
         reasoning_effort = config.get("openai_reasoning_effort")
         if reasoning_effort:
             kwargs["reasoning_effort"] = reasoning_effort

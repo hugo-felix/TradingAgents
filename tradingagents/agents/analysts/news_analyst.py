@@ -2,6 +2,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.analysts.turn import finish_analyst_turn, report_instruction, take_turn
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
+from tradingagents.agents.grounding import grounded_run_enabled
 from tradingagents.agents.tools import (
     get_company_disclosures,
     get_event_candidates,
@@ -97,7 +98,7 @@ def create_news_analyst(llm):
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
 
-        result, report = take_turn(prompt, llm, available_tools, state["messages"])
+        result, report = take_turn(prompt, llm, available_tools, state["messages"], grounded_run_enabled(state))
 
         result, report, checks = finish_analyst_turn(state, llm, result, report, "news",
                                                     task_context=task_context)
