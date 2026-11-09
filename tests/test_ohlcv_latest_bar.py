@@ -93,6 +93,38 @@ def test_fill_price_gaps_drops_nan_close_rows():
     assert filled["Close"].iloc[0] == 100.0
 
 
+@pytest.mark.unit
+def test_gap_filling_cannot_change_earlier_prices_when_later_bars_arrive():
+    frame = pd.DataFrame({
+        "Date": pd.to_datetime(["2026-05-05", "2026-05-06", "2026-05-07"]),
+        "Open": [float("nan"), 101.0, float("nan")],
+        "High": [float("nan"), 103.0, float("nan")],
+        "Low": [float("nan"), 100.0, float("nan")],
+        "Close": [100.0, 102.0, 101.0],
+        "Volume": [float("nan"), 500.0, float("nan")],
+    })
+    prefix = ohlcv._fill_price_gaps(frame.iloc[:1])
+    full = ohlcv._fill_price_gaps(frame)
+    pd.testing.assert_frame_equal(prefix, full.iloc[:1])
+    assert full.loc[2, "Open"] == 101.0
+    assert pd.isna(full.loc[2, "Volume"])
+
+
+@pytest.mark.unit
+def test_gap_filling_uses_session_order_instead_of_vendor_row_order():
+    frame = pd.DataFrame({
+        "Date": pd.to_datetime(["2026-05-07", "2026-05-06", "2026-05-05"]),
+        "Open": [300.0, float("nan"), 100.0],
+        "Close": [301.0, 201.0, 101.0],
+        "Volume": [900.0, float("nan"), 500.0],
+    })
+    original = frame.copy(deep=True)
+    full = ohlcv._fill_price_gaps(frame)
+    assert full["Open"].tolist() == [100.0, 100.0, 300.0]
+    assert pd.isna(full["Volume"].iloc[1])
+    pd.testing.assert_frame_equal(frame, original)
+
+
 # --- load_ohlcv end-to-end (with a mocked cache read) -----------------------
 
 def _run_load(monkeypatch, tmp_path, frame, curr_date):

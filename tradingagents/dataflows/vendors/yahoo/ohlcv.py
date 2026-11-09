@@ -85,12 +85,11 @@ def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fill_price_gaps(data: pd.DataFrame) -> pd.DataFrame:
-    """Drop rows with no close and forward/back-fill remaining price gaps so
-    indicators compute on a continuous series."""
-    price_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in data.columns]
+    """Carry known prices forward without borrowing future values or volumes."""
+    price_cols = [c for c in ["Open", "High", "Low", "Close"] if c in data.columns]
     # copy() so a filtered (sliced) input is written to safely, not via a view.
-    data = data.dropna(subset=["Close"]).copy()
-    data[price_cols] = data[price_cols].ffill().bfill()
+    data = data.dropna(subset=["Close"]).sort_values("Date", kind="stable").copy()
+    data[price_cols] = data[price_cols].ffill()
     return data
 
 
@@ -174,8 +173,10 @@ def load_ohlcv(symbol: str, as_of_date: str, fill_gaps: bool = True) -> pd.DataF
     filtered out so backtests never see future prices.
 
     ``fill_gaps`` carries prices forward over gaps so indicators compute on a
-    continuous series. Pass ``False`` to read the values as the vendor reported
-    them, leaving a cell that was never reported empty.
+    continuous series; leading price gaps and missing volumes remain missing.
+    Pass ``False`` to read the values as the vendor reported them, leaving a
+    cell that was never reported empty. Adjusted historical prices are still
+    the vendor's current revision, not point-in-time corporate-action data.
     """
     # Resolve broker/forex symbols (XAUUSD+ -> GC=F) to Yahoo's convention,
     # then reject values that would escape the cache directory when
