@@ -151,6 +151,94 @@ def validate_dividend_snapshot(data):
 
 
 class DesktopAPI:
+    @response
+    def register_book(self, metadata):
+        from tradingagents.desktop.books import BookRegistry, validate_metadata
+        validate_metadata(metadata)
+        if self._window is None:
+            raise ValueError('请在桌面窗口中选择书籍文件。')
+        import webview
+        chosen = self._window.create_file_dialog(
+            webview.FileDialog.OPEN, allow_multiple=False,
+            file_types=('Books (*.pdf;*.epub)',))
+        if not chosen:
+            return {'cancelled': True}
+        path = Path(chosen if isinstance(chosen, str) else chosen[0])
+        return BookRegistry(self._store).register(path, metadata)
+
+    @response
+    def list_books(self):
+        from tradingagents.desktop.books import BookRegistry
+        return BookRegistry(self._store).list_books()
+
+    @response
+    def get_book(self, book_id):
+        from tradingagents.desktop.books import BookRegistry
+        return BookRegistry(self._store).get(book_id)
+
+    @response
+    def verify_book(self, book_id):
+        from tradingagents.desktop.books import BookRegistry
+        return BookRegistry(self._store).verify(book_id)
+
+    @response
+    def parse_book_text(self, book_id):
+        from tradingagents.desktop.book_text import BookTextLibrary
+        document = BookTextLibrary(self._store).parse(book_id)
+        return {key: value for key, value in document.items() if key != 'units'}
+
+    @response
+    def book_text_history(self, book_id):
+        from tradingagents.desktop.book_text import BookTextLibrary
+        return BookTextLibrary(self._store).history(book_id)
+
+    @response
+    def search_book_text(self, parse_id, query):
+        from tradingagents.desktop.book_text import BookTextLibrary
+        return BookTextLibrary(self._store).search(parse_id, query)
+
+    @response
+    def book_text_citation(self, parse_id, ordinal):
+        from tradingagents.desktop.book_text import BookTextLibrary
+        return BookTextLibrary(self._store).citation(parse_id, ordinal)
+
+    @response
+    def list_strategies(self):
+        from tradingagents.desktop.strategies import StrategyRegistry
+        return StrategyRegistry(self._store).list_strategies()
+
+    @response
+    def strategy_history(self, strategy_id):
+        from tradingagents.desktop.strategies import StrategyRegistry
+        return StrategyRegistry(self._store).history(strategy_id)
+
+    @response
+    def save_strategy(self, definition, strategy_id=None, expected_version=0):
+        from tradingagents.desktop.strategies import StrategyRegistry
+        return StrategyRegistry(self._store).save(
+            definition, strategy_id=strategy_id, expected_version=expected_version)
+
+    @response
+    def get_strategy(self, strategy_id, version=None):
+        from tradingagents.desktop.strategies import StrategyRegistry
+        return StrategyRegistry(self._store).get(strategy_id, version)
+
+    @response
+    def confirm_strategy(self, strategy_id, expected_version, confirmed_by):
+        from tradingagents.desktop.strategies import StrategyRegistry
+        return StrategyRegistry(self._store).confirm(
+            strategy_id, expected_version=expected_version, confirmed_by=confirmed_by)
+
+    @response
+    def record_strategy_run(self, strategy_id, version, manifest):
+        from tradingagents.desktop.strategy_runs import StrategyRunRegistry
+        return StrategyRunRegistry(self._store).record(strategy_id, version, manifest)
+
+    @response
+    def list_strategy_runs(self, strategy_id, version):
+        from tradingagents.desktop.strategy_runs import StrategyRunRegistry
+        return StrategyRunRegistry(self._store).list_runs(strategy_id, version)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library

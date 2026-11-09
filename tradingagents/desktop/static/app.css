@@ -230,6 +230,15 @@ details[open] > summary { margin-bottom: 14px; }
 .record-title strong { font-size: 13px; font-weight: 500; }
 .form-panel { max-width: 760px; }
 .form-panel h2 { font-size: 15px; }
+.book-record { overflow-wrap: anywhere; }
+.book-record dl { margin: 16px 0; }
+.book-record dt { color: var(--dim); font-size: 12px; margin-top: 12px; }
+.book-record dd { margin: 4px 0 0; white-space: pre-wrap; }
+.book-record .actions { flex-wrap: wrap; margin-top: 16px; }
+.book-text { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 12px; }
+.book-text label { display: block; margin: 12px 0; }
+.book-text select, .book-text input { width: 100%; min-width: 0; }
+.book-text details { margin-top: 12px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .form-grid label { margin: 11px 0; }
 .task-strip { position: sticky; top: var(--topbar-height,57px); z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 15px; padding: 8px 26px; background: var(--paper); border-bottom: 1px solid var(--line); font-size: 11px; }
@@ -659,6 +668,22 @@ label .select-control { width: 100%; }
 .entry-check summary { cursor: pointer; }
 @media (max-width: 760px) { .entry-environment { grid-template-columns: minmax(0, 1fr); } }
 .research-next p { line-height: 1.7; }
+.strategy-panel { max-width: 960px; overflow-wrap: anywhere; }
+.strategy-list-item { overflow-wrap: anywhere; }
+.strategy-panel .form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.strategy-rule-group { min-width: 0; border: 1px solid var(--line); border-radius: 8px; margin: 20px 0; padding: 16px; }
+.strategy-rule { border-bottom: 1px solid var(--line); padding-bottom: 16px; margin-bottom: 16px; }
+.strategy-rule textarea { min-height: 80px; }
+.strategy-versions { flex-wrap: wrap; }
+.strategy-scope { display: grid; grid-template-columns: 140px minmax(0, 1fr); gap: 8px 16px; }
+.strategy-scope dt { color: var(--muted); }
+.strategy-scope dd { margin: 0; white-space: pre-wrap; }
+.strategy-panel li p { white-space: pre-wrap; }
+.strategy-run-manifest { white-space: pre-wrap; overflow-wrap: anywhere; }
+.strategy-panel #strategy-confirm-form { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 16px; }
+.strategy-panel .strategy-ack { display: flex; flex-direction: row; align-items: center; gap: 8px; margin: 16px 0; }
+.strategy-ack input { width: auto; }
+@media (max-width: 760px) { .strategy-panel .form-grid { grid-template-columns: minmax(0, 1fr); } }
 
 /* Today's workspace: summary first, evidence on demand. */
 .entry-progress { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--line); padding: 18px 0; margin-top: 18px; }

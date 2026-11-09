@@ -9,6 +9,8 @@ import sys
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
 
@@ -63,7 +65,7 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
     page.wait_for_selector('[data-inspect]')
     page.wait_for_selector('[data-angle="market"] .preview-point')
     assert [text.strip() for text in page.locator('.sidebar nav button').all_text_contents()] == [
-        '今日关注', '股票研究', '高股息', '持仓管理', '历史记录']
+        '今日关注', '股票研究', '高股息', '持仓管理', '历史记录', '书籍资料', '策略管理']
     assert page.locator('[data-angle="sentiment"] .angle-status').inner_text() == '数据不足'
     assert page.locator('.brand-mark img').evaluate('(image) => image.complete && image.naturalWidth > 0'), 'Brand image failed to load'
     execution=page.locator('[data-plan-field="execution"]')
@@ -467,6 +469,268 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
     assert page.locator('#analysis-form [name="ticker"]').input_value() == '600036'
     assert api._tasks.status()['id'] == task_id
     assert not store.holdings()
+    # Book management uses real storage/API and a synthetic native picker result.
+    # No real book, OCR, model call or native window is needed for this browser check.
+    with patch.dict(sys.modules, {'webview': SimpleNamespace(
+            FileDialog=SimpleNamespace(OPEN='open'))}):
+        source = Path(directory) / 'synthetic.pdf'
+        source.write_bytes(b'%PDF-1.7\nsynthetic browser fixture\n%%EOF')
+        api._window = SimpleNamespace(create_file_dialog=lambda *a, **k: None)
+        page.locator('.sidebar [data-page="books"]').click()
+        page.wait_for_selector('.empty:has-text("尚未登记书籍")')
+        book_form = page.locator('#book-form')
+        book_form.locator('[type="submit"]').click()
+        assert book_form.locator('[aria-invalid="true"]').count() == 7
+        metadata = {'title': '<script>测试书籍</script>', 'author': '合成作者',
+                    'translator': '无', 'language': '中文', 'edition': '测试版',
+                    'source': '离线合成文件', 'usage_scope': '浏览器回归'}
+        for key, value in metadata.items():
+            book_form.locator(f'[name="{key}"]').fill(value)
+        book_form.locator('[type="submit"]').click()
+        page.wait_for_selector('#toast:has-text("已取消选择")')
+        assert book_form.locator('[name="title"]').input_value() == metadata['title']
+        assert api.list_books()['data'] == []
+        api._window = SimpleNamespace(create_file_dialog=lambda *a, **k: (str(source),))
+        book_form.locator('[type="submit"]').click()
+        page.wait_for_selector('.book-record')
+        assert page.locator('.book-record h3').inner_text() == metadata['title']
+        assert page.locator('.book-record script').count() == 0
+        assert '解析未开始 · 索引未开始' in page.locator('.book-record').inner_text()
+        book_form.locator('[type="submit"]').click()
+        page.wait_for_selector('#toast:has-text("此文件已登记")')
+        assert page.locator('.book-record').count() == 1
+        book_form.locator('[name="edition"]').fill('冲突版')
+        book_form.locator('[type="submit"]').click()
+        page.wait_for_selector('#toast.error')
+        assert len(api.list_books()['data']) == 1
+        assert book_form.locator('[name="edition"]').input_value() == '冲突版'
+        page.locator('[data-action="book-verify"]').click()
+        page.wait_for_selector('.book-check:has-text("指纹一致")')
+        book = api.list_books()['data'][0]
+        snapshot = store.directory / 'books' / 'originals' / book['sha256']
+        snapshot.write_bytes(b'changed fixture')
+        page.locator('[data-action="book-verify"]').click()
+        page.wait_for_selector('.book-check:has-text("原文快照已变更")')
+        snapshot.unlink()
+        page.locator('[data-action="book-verify"]').click()
+        page.wait_for_selector('.book-check:has-text("原文快照缺失")')
+        page.locator('.book-record summary').click()
+        assert book['sha256'] in page.locator('.book-record').inner_text()
+        for width in (760, 1024, 1440, 2560):
+            page.set_viewport_size({'width': width, 'height': 1000})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+            if width == 1440:
+                page.screenshot(path=str(options.output_dir / 'books.png'), full_page=True)
+        # A failed refresh must remain distinct from an empty registry.
+        page.evaluate('''() => {
+            window.restoreBookList=window.pywebview.api.list_books;
+            window.pywebview.api.list_books=async()=>({ok:false,error:'合成读取错误'});
+        }''')
+        page.locator('[data-action="books-reload"]').click()
+        page.wait_for_selector('[role="alert"]:has-text("合成读取错误")')
+        assert page.locator('.book-record').count() == 1
+        page.evaluate('window.pywebview.api.list_books=window.restoreBookList')
+        page.locator('[data-action="books-reload"]').click()
+        page.wait_for_selector('[data-action="books-reload"]:not([disabled])')
+        assert page.locator('[role="alert"]').count() == 0
+        page.reload()
+        page.wait_for_selector('.page-head')
+        page.locator('.sidebar [data-page="books"]').click()
+        page.wait_for_selector('.book-record')
+        assert page.locator('.book-check').inner_text() == '尚未核验原文快照'
+        assert page.locator('.book-record h3').inner_text() == metadata['title']
+    # Text extraction uses a synthetic EPUB, with no network, OCR or model calls.
+    import zipfile
+    with tempfile.TemporaryDirectory() as text_directory:
+        source = Path(text_directory) / 'text.epub'
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('mimetype', 'application/epub+zip')
+            archive.writestr('META-INF/container.xml',
+                             '<container><rootfile full-path="book.opf"/></container>')
+            archive.writestr('book.opf', '<package><manifest><item id="c" href="c.xhtml" '
+                             'media-type="application/xhtml+xml"/></manifest>'
+                             '<spine><itemref idref="c"/></spine></package>')
+            archive.writestr('c.xhtml', '<html><body>volume 趋势确认 &lt;img src=x&gt;'
+                             '<script>window.bookInjected=true</script></body></html>')
+        api._window = SimpleNamespace(create_file_dialog=lambda *a, **kw: (str(source),))
+        text_book = api.register_book({
+            'title': '原文检索样本', 'author': '合成作者', 'translator': '无',
+            'language': '中文 / English', 'edition': '测试版',
+            'source': '合成 EPUB', 'usage_scope': '仅回归测试',
+        })['data']['book']
+        page.locator('[data-action="books-reload"]').click()
+        record = page.locator(f'[data-book-id="{text_book["book_id"]}"]')
+        record.locator('[data-action="book-parse"]').click()
+        record.locator('[data-book-parse]').wait_for(state='attached')
+        record.locator('[data-book-query]').fill('volume')
+        record.locator('[data-action="book-search"]').click()
+        record.locator('details:has([data-action="book-citation"]) > summary').click()
+        record.locator('[data-action="book-citation"]').click()
+        record.locator('.book-citation').wait_for()
+        assert '趋势确认 <img src=x>' in record.locator('.book-citation').inner_text()
+        assert record.locator('.book-citation img, .book-citation script').count() == 0
+        assert not page.evaluate('Boolean(window.bookInjected)')
+        for width in (760, 1024, 1440, 2560):
+            page.set_viewport_size({'width': width, 'height': 1000})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+        page.reload()
+        page.wait_for_selector('.page-head')
+        page.locator('.sidebar [data-page="books"]').click()
+        record.locator('[data-book-parse]').wait_for(state='attached')
+        record.locator('[data-book-query]').fill('absent')
+        record.locator('[data-action="book-search"]').click()
+        record.locator('[role="status"]:has-text("共 0 个位置")').wait_for()
+        (store.directory / 'books' / 'originals' / text_book['sha256']).unlink()
+        record.locator('[data-action="book-parse"]').click()
+        record.locator('[role="alert"]:has-text("指纹")').wait_for()
+        assert record.locator('[data-book-parse] option').count() == 1
+        api._window = None
+    # Strategy definitions are synthetic and never execute market/model requests.
+    page.locator('.sidebar [data-page="strategies"]').click()
+    page.wait_for_selector('.empty:has-text("尚未保存策略")')
+    page.locator('[data-action="strategy-new"]').click()
+    strategy_form = page.locator('#strategy-form')
+    strategy_form.locator('[type="submit"]').click()
+    assert strategy_form.locator('[aria-invalid="true"]').count() == 1
+    strategy_form.locator('[name="name"]').fill('<script>离线策略</script>')
+    strategy_form.locator('[type="submit"]').click()
+    review = page.locator('[aria-label="策略版本详情"]')
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v1")')
+    assert review.locator('script').count() == 0
+    confirm = page.locator('#strategy-confirm-form')
+    confirm.locator('[type="submit"]').click()
+    assert confirm.locator('[aria-invalid="true"]').count() == 2
+    confirm.locator('[name="confirmed_by"]').fill('离线核对人')
+    confirm.locator('[type="checkbox"]').check()
+    confirm.locator('[type="submit"]').click()
+    page.wait_for_selector('#toast.error:has-text("尚未完整")')
+    assert api.list_strategies()['data'][0]['version'] == 1
+    page.locator('[data-action="strategy-edit"]').click()
+    scope = {'source': '个人测试说明 v1', 'market': '合成市场', 'universe': '合成股票池',
+             'timeframe': '日线', 'holding_period': '仅作测试', 'environment': '离线环境',
+             'observation_time': '收盘后', 'confirmation_time': '核对后',
+             'execution_time': '不执行', 'execution_price': '不产生成交'}
+    for key, value in scope.items():
+        strategy_form.locator(f'[name="{key}"]').fill(value)
+    groups = ('entry', 'filters', 'exit', 'invalidation', 'position', 'portfolio', 'exceptions')
+    for group in groups:
+        page.locator(f'[data-action="strategy-add-rule"][data-group="{group}"]').click()
+        row = strategy_form.locator(f'[data-rule-row][data-group="{group}"]').first
+        row.locator('[data-rule-field="text"]').fill(f'{group} 合成规则 <b>原样文本</b>')
+        row.locator('[data-rule-field="citation"]').fill('个人测试说明，不是书籍原文')
+    # Add/remove must retain other rows and scope; navigation retains the window draft.
+    page.locator('[data-action="strategy-add-rule"][data-group="entry"]').click()
+    page.locator('[data-action="strategy-remove-rule"][data-group="entry"]').last.click()
+    page.locator('.sidebar [data-page="books"]').click()
+    page.locator('.sidebar [data-page="strategies"]').click()
+    assert strategy_form.locator('[name="market"]').input_value() == scope['market']
+    assert strategy_form.locator('[data-rule-row]').count() == 7
+    assert 'entry 合成规则' in strategy_form.locator('[data-rule-field="text"]').first.input_value()
+    for width in (760, 1024, 1440, 2560):
+        page.set_viewport_size({'width': width, 'height': 1000})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    strategy_form.locator('[type="submit"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v2")')
+    confirm.locator('[name="confirmed_by"]').fill('离线核对人')
+    confirm.locator('[type="checkbox"]').check()
+    confirm.locator('[type="submit"]').click()
+    page.wait_for_selector('#toast.error:has-text("待定义规则")')
+    page.locator('[data-action="strategy-edit"]').click()
+    for group in groups:
+        strategy_form.locator(f'[data-group="{group}"] [data-rule-field="state"]').select_option('manual', force=True)
+    strategy_form.locator('[type="submit"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v3")')
+    confirm.locator('[name="confirmed_by"]').fill('离线核对人')
+    confirm.locator('[type="checkbox"]').check()
+    confirm.locator('[type="submit"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v4 · 已确认")')
+    assert '离线核对人' in review.inner_text()
+    assert '实现未完成 · 回测未评估 · 样本外未评估' in review.inner_text()
+    page.locator('[data-action="strategy-version"][data-version="1"]').click()
+    assert review.locator('[data-action="strategy-edit"]').count() == 0
+    assert '未填写' in review.inner_text()
+    page.locator('[data-action="strategy-version"][data-version="4"]').click()
+    page.locator('[data-action="strategy-edit"]').click()
+    strategy_form.locator('[name="name"]').fill('新一版个人草稿')
+    assert page.locator('#strategy-confirm-form').count() == 0
+    strategy_form.locator('[type="submit"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v5 · 草稿")')
+    doc = api.list_strategies()['data'][0]
+    assert doc['confirmation'] is None
+    # Preserve fields that future/API clients may add when editing through the UI.
+    doc['definition']['extra_context'] = {'source_version': 'synthetic'}
+    doc['definition']['rules']['entry'][0]['extra_evidence'] = ['synthetic']
+    assert api.save_strategy(doc['definition'], doc['strategy_id'], 5)['ok']
+    page.locator('[data-action="strategy-open"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v6")')
+    page.locator('[data-action="strategy-edit"]').click()
+    strategy_form.locator('[name="environment"]').fill('保留的未保存编辑')
+    # Another writer advances the saved version; stale save must preserve the draft.
+    assert api.save_strategy(doc['definition'], doc['strategy_id'], 6)['ok']
+    strategy_form.locator('[type="submit"]').click()
+    page.wait_for_selector('#toast.error:has-text("策略已更新")')
+    assert strategy_form.locator('[name="environment"]').input_value() == '保留的未保存编辑'
+    page.locator('[data-action="strategy-discard"]').click()
+    page.locator('[data-action="strategy-open"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v7")')
+    page.locator('[data-action="strategy-edit"]').click()
+    strategy_form.locator('[name="environment"]').fill('完成核对后的修改')
+    strategy_form.locator('[type="submit"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v8")')
+    saved = api.get_strategy(doc['strategy_id'])['data']['definition']
+    assert saved['extra_context'] == {'source_version': 'synthetic'}
+    assert saved['rules']['entry'][0]['extra_evidence'] == ['synthetic']
+    # Externally supplied evidence belongs to the historical confirmed version only.
+    run_manifest = {
+        'run_id': 'browser-fixture-001', 'stage': 'backtest', 'outcome': 'failed',
+        'recorded_by': '离线登记人', 'summary': '<img src=x onerror=alert(1)>合成失败记录',
+        'assumptions': ['仅合成数据'], 'limitations': ['未执行真实策略'],
+        'implementation': {'entrypoint': 'synthetic:run', 'revision': 'fixture-v1'},
+        'parameters': {'window': {'value': 5, 'source': '测试假设'}},
+        'data': [{'source': 'synthetic', 'version': 'fixture-v1', 'sha256': 'a' * 64}],
+        'period': {'start': '2020-01-01', 'end': '2020-01-31'},
+        'started_at': '2026-11-09T10:00:00+08:00',
+        'finished_at': '2026-11-09T10:00:02+08:00', 'duration_seconds': 2,
+        'metrics': {},
+    }
+    assert api.record_strategy_run(doc['strategy_id'], 4, run_manifest)['ok']
+    evidence = page.locator('[aria-label="运行证据"]')
+    page.locator('[data-action="strategy-runs"]').click()
+    page.wait_for_selector('[aria-label="运行证据"] p:has-text("本版本尚无登记记录")')
+    page.locator('[data-action="strategy-version"][data-version="4"]').click()
+    assert '尚未读取本版本证据' in evidence.inner_text()
+    page.locator('[data-action="strategy-runs"]').click()
+    page.wait_for_selector('[aria-label="运行证据"] h4:has-text("失败")')
+    assert run_manifest['summary'] in evidence.inner_text()
+    assert evidence.locator('img').count() == 0
+    assert '外部记录未核验' in evidence.inner_text()
+    evidence.locator('summary').click()
+    assert '"value": 5' in evidence.locator('pre').inner_text()
+    assert '实现未完成 · 回测未评估 · 样本外未评估' in review.inner_text()
+    for width in (760, 1024, 1440, 2560):
+        page.set_viewport_size({'width': width, 'height': 1000})
+        assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
+        if width == 1440:
+            page.evaluate('window.scrollTo(0, 0)')
+            page.screenshot(path=str(options.output_dir / 'strategies.png'), full_page=True)
+    page.locator('[data-action="strategy-version"][data-version="8"]').click()
+    page.set_viewport_size({'width': 1440, 'height': 1000})
+    assert confirm.locator('.strategy-ack').evaluate(
+        "el => getComputedStyle(el).flexDirection") == 'row'
+    page.reload()
+    page.wait_for_selector('.page-head')
+    page.locator('.sidebar [data-page="strategies"]').click()
+    page.wait_for_selector('.strategy-list-item h3:has-text("新一版个人草稿")')
+    page.locator('[data-action="strategy-open"]').click()
+    page.wait_for_selector('[aria-label="策略版本详情"] h2:has-text("v8")')
+    assert page.locator('[data-action="strategy-version"]').count() == 8
+    page.locator('[data-action="strategy-version"][data-version="4"]').click()
+    page.locator('[data-action="strategy-runs"]').click()
+    page.wait_for_selector('[aria-label="运行证据"] h4:has-text("失败")')
     assert not errors, errors
     browser.close()
-    print('Browser regression passed: Chinese stock names, legacy holdings, themed dropdown/keyboard, inline validation, auto reports, responsive layout, persistence and task/cancel; no JS errors')
+    print('Browser regression passed: Chinese stock names, legacy holdings, themed dropdown/keyboard, '
+          'inline validation, auto reports, responsive layout, persistence '
+          'and task/cancel; book registration, duplicates, conflicts and integrity; '
+          'strategy drafts, confirmation, versions, conflicts and persistence; no JS errors')

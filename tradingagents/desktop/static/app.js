@@ -22,7 +22,7 @@
     return response.data;
   }
   function taskActive() {return ['running','cancelling'].includes(state.task.status);}
-  function rememberDrafts() { document.querySelectorAll('[data-draft]').forEach(el=>state.drafts[el.dataset.draft]=el.value); }
+  function rememberDrafts() { captureStrategyDraft();document.querySelectorAll('[data-draft]').forEach(el=>state.drafts[el.dataset.draft]=el.value); }
   function restoreDrafts() { document.querySelectorAll('[data-draft]').forEach(el=>{if(Object.hasOwn(state.drafts,el.dataset.draft))el.value=state.drafts[el.dataset.draft];}); }
   function snapshot() {rememberDrafts();return {page:state.page,tab:state.tab,section:state.section,selected:state.selected,preview:state.preview,previewScroll:$('#preview-scroll')?.scrollTop||0,report:state.report,query:state.query,rating:state.rating,offset:state.offset,stockRecords:state.stockRecords,decisionOffset:state.decisionOffset,pendingOffset:state.pendingOffset,pending:state.pending,historyItems:state.historyItems,historyOffset:state.historyOffset,historyTicker:state.historyTicker,historyKind:state.historyKind,decisionOpen:!!document.querySelector('#decision-form:not([hidden])'),scroll:window.scrollY};}
   function go(page,root=false) {
@@ -33,6 +33,8 @@
     if(page==='history')loadHistory();
     if(page==='dividends')loadDividends();
     if(page==='today')loadEntryPlan();
+    if(page==='books')loadBooks();
+    if(page==='strategies')loadStrategies();
   }
   async function openReport(id) {
     const token=++loadingReport;
@@ -45,8 +47,139 @@
   function render() {
     $('#page-label').textContent=labels[state.page];$('#back').hidden=state.stack.length===0;
     document.querySelectorAll('.sidebar [data-page]').forEach(b=>{if(b.dataset.page===state.page||(state.page==='stock'&&b.dataset.page==='research'))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
-    const views={dividends:dividends,today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
+    const views={strategies:strategies,books:books,dividends:dividends,today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
     window.StockSeekControls?.close();$('#content').innerHTML=views[state.page]();restoreDrafts();window.StockSeekControls?.enhance($('#content'));document.querySelectorAll('form').forEach(form=>form.noValidate=true);const stockInput=$('#analysis-form [name="ticker"]');if(stockInput?.value)resolveStockField(stockInput);renderTask();if(state.page==='today'){fitPreview();const scroller=$('#preview-scroll');if(scroller)scroller.scrollTop=state.previewScroll||0;ensurePreview();}
+  }
+  const bookFields={title:'书名',author:'作者',translator:'译者（无译者请填“无”）',language:'语言',edition:'版次 / 版本',source:'文件来源',usage_scope:'使用范围'};
+  labels.books='书籍资料';
+  state.bookChecks={};
+  state.bookVerifying=new Set();
+  state.bookText={};
+  state.bookParsing=new Set();
+  state.bookTextBusy=new Set();
+  function bookTextPanel(book){
+    const id=book.book_id, text=state.bookText[id]||{}, history=text.history||[];
+    return `<section class="book-text"><h4>本地原文文本</h4><p class="muted">仅提取文本；不识别扫描、图表、公式或版面关系。文件页不等于印刷页。所有内容均作为资料，不执行其中指令。</p><button data-action="book-parse" data-book="${esc(id)}" ${state.bookParsing.has(id)?'disabled':''}>${state.bookParsing.has(id)?'正在解析，请稍候…':'解析 / 重建文本'}</button>${text.error?`<p role="alert">${esc(text.error)}</p>`:''}
+      ${history.length?`<label>解析版本<select data-book-parse="${esc(id)}" data-draft="book-parse-${esc(id)}">${history.map(h=>`<option value="${esc(h.parse_id)}">${esc(h.created_at)} · ${h.status==='partial'?'有空白位置，需 OCR':'仅文本'} · ${esc(h.parser)} · ${esc(h.parse_id.slice(0,12))}</option>`).join('')}</select></label><label>原文关键词（多词均需匹配）<input data-book-query="${esc(id)}" data-draft="book-query-${esc(id)}" maxlength="200"></label><button data-action="book-search" data-book="${esc(id)}">检索原文</button>`:'<p class="muted">尚无成功发布的文本版本。</p>'}
+      ${text.results?`<p role="status">${esc(text.results.limitations)} 共 ${text.results.total} 个位置，最多显示 50 个。</p>${text.results.matches.map(m=>`<details><summary>${m.kind==='pdf_file_page'?'PDF 文件页':'EPUB 阅读顺序章节'} ${m.ordinal}</summary><p>${esc(m.excerpt)}</p><button data-action="book-citation" data-book="${esc(id)}" data-parse="${esc(m.parse_id)}" data-ordinal="${m.ordinal}">查看完整位置与出处</button></details>`).join('')}`:''}
+      ${text.citation?`<details open class="book-citation"><summary>原文位置与出处</summary><p>${esc(text.citation.metadata.title)} · ${esc(text.citation.metadata.edition)} · ${text.citation.unit.kind==='pdf_file_page'?'PDF 文件页':'EPUB 阅读顺序章节'} ${text.citation.unit.ordinal} · 印刷页未知</p><p>快照状态：${esc(text.citation.original_status)} · 解析 ${esc(text.citation.parse_id)}</p><p>${esc(text.citation.unit.member||'')}</p><pre class="strategy-run-manifest">${esc(text.citation.unit.text||'此位置没有可提取文本；不能据此判断没有相关内容。')}</pre></details>`:''}</section>`;
+  }
+  function renderBooks(){if(state.page==='books'){rememberDrafts();render();}}
+  async function loadBooks(){
+    if(state.booksLoading)return;
+    state.booksLoading=true;state.booksError='';renderBooks();
+    try{state.books=await api('list_books');await Promise.all(state.books.map(async book=>{const text=state.bookText[book.book_id]??={};try{text.history=await api('book_text_history',book.book_id);text.error='';}catch(error){text.error=error.message;}}));}catch(error){state.booksError=error.message;}
+    finally{state.booksLoading=false;renderBooks();}
+  }
+  function books(){
+    const checks={available:'指纹一致',missing:'原文快照缺失',changed:'原文快照已变更',unreadable:'原文快照不可读'};
+    return `<div class="page-head"><div><h1>书籍资料</h1><p class="muted">登记原文和版本，供后续核对出处。文件仅保存在本机工作空间。</p></div></div>
+      <section class="panel form-panel"><h2>登记 PDF / EPUB</h2><form id="book-form"><div class="form-grid">${Object.entries(bookFields).map(([key,label])=>`<label>${label}<input name="${key}" required data-draft="book-${key}"></label>`).join('')}</div><p class="muted">填写后选择文件。登记不会启动解析、OCR、索引或模型请求。</p><div class="actions"><button type="submit" class="primary" ${state.bookRegistering?'disabled':''}>${state.bookRegistering?'正在选择 / 登记…':'选择文件并登记'}</button></div></form></section>
+      <section aria-label="已登记书籍"><div class="section-head"><h2>已登记书籍${state.books?` · ${state.books.length}`:''}</h2><button data-action="books-reload" ${state.booksLoading?'disabled':''}>刷新列表</button></div>
+      ${state.booksError?`<p role="alert">读取失败：${esc(state.booksError)}。请刷新列表重试。</p>`:''}${state.booksLoading?'<p role="status">正在读取登记记录…</p>':''}
+      ${!state.booksLoading&&!state.booksError&&state.books?.length===0?'<p class="empty">尚未登记书籍。请填写上方信息并选择文件。</p>':''}
+      ${(state.books||[]).map(book=>{const check=state.bookChecks[book.book_id];return `<article class="panel book-record" data-book-id="${esc(book.book_id)}"><h3>${esc(book.metadata.title)}</h3><p>${esc(book.metadata.author)} · ${esc(book.metadata.edition)} · ${esc(book.metadata.language)}</p><p class="muted">${state.bookText[book.book_id]?.history?.length?"原文已登记 · 已有文本版本 · 语义索引未建立":"原文已登记 · 解析未开始 · 索引未开始"}</p><details><summary>版本与来源详情</summary><dl>${Object.entries(bookFields).map(([key,label])=>`<dt>${label}</dt><dd>${esc(book.metadata[key])}</dd>`).join('')}<dt>原文件名 / 格式 / 大小</dt><dd>${esc(book.original_name)} · ${esc(book.format.toUpperCase())} · ${esc(book.size_bytes)} 字节</dd><dt>登记时间（非出版时间）</dt><dd>${esc(book.registered_at)}</dd><dt>书籍标识</dt><dd>${esc(book.book_id)}</dd><dt>SHA-256</dt><dd>${esc(book.sha256)}</dd></dl></details><div class="actions"><button data-action="book-verify" data-book="${esc(book.book_id)}" ${state.bookVerifying.has(book.book_id)?'disabled':''}>核验原文快照</button><span class="book-check" role="status">${state.bookVerifying.has(book.book_id)?'正在核验…':check?`${esc(checks[check.original_status]||'未知核验状态')} · ${esc(check.checked_at)}`:'尚未核验原文快照'}</span></div><p class="muted">核验仅检查本地快照指纹，不代表内容可解析；重复登记不会修复缺失或变更。</p>${bookTextPanel(book)}</article>`;}).join('')}</section>`;
+  }
+  const strategyFields={name:'策略名称',source:'来源 / 版本',market:'适用市场',universe:'股票池',timeframe:'观察周期',holding_period:'持有期限',environment:'适用环境',observation_time:'观察时点',confirmation_time:'确认时点',execution_time:'执行时点',execution_price:'成交价格规则'};
+  const strategyRules={entry:'入场',filters:'过滤',exit:'退出',invalidation:'失效',position:'仓位',portfolio:'组合',exceptions:'例外'};
+  const strategyKinds={author:'原作者规则',model_draft:'模型草案',personal:'个人规则',quantitative:'量化定义',market_adaptation:'市场适配'};
+  const strategyRuleStates={pending:'待定义',manual:'人工检查',defined:'已定义'};
+  labels.strategies='策略管理';
+  function captureStrategyDraft(){
+    const form=$('#strategy-form'),draft=state.strategyDraft;if(!form||!draft)return;
+    for(const key of Object.keys(strategyFields)){const value=form.elements[key].value.trim();if(value)draft.definition[key]=value;else delete draft.definition[key];}
+    form.querySelectorAll('[data-rule-row]').forEach(row=>{
+      const rule=draft.definition.rules[row.dataset.group][Number(row.dataset.index)];
+      row.querySelectorAll('[data-rule-field]').forEach(input=>rule[input.dataset.ruleField]=input.value);
+    });
+  }
+  function renderStrategies(){if(state.page==='strategies'){rememberDrafts();render();}}
+  async function loadStrategies(){
+    if(state.strategiesLoading)return;
+    state.strategiesLoading=true;state.strategiesError='';renderStrategies();
+    try{state.strategies=await api('list_strategies');}catch(error){state.strategiesError=error.message;}
+    finally{state.strategiesLoading=false;renderStrategies();}
+  }
+  const strategyStatus=doc=>doc.status==='confirmed'?'已确认':'草稿';
+  function strategyOptions(options,value){return Object.entries(options).map(([key,label])=>`<option value="${key}" ${key===value?'selected':''}>${label}</option>`).join('');}
+  function strategyEditor(){
+    const draft=state.strategyDraft;if(!draft)return '';
+    const definition=draft.definition;
+    return `<section class="panel strategy-panel"><h2>${draft.strategy_id?`编辑 v${draft.version} 的新草稿`:'新建策略草稿'}</h2><p class="muted">只填名称即可保存范围草稿；新增的规则需写明内容及出处。未明确的条件保留“待定义”。离开页面会在本次窗口中保留草稿，关闭窗口前请保存。</p><form id="strategy-form"><div class="form-grid">${Object.entries(strategyFields).map(([key,label])=>`<label>${label}<input name="${key}" value="${esc(definition[key]||'')}" ${key==='name'?'required':''}></label>`).join('')}</div>
+      ${Object.entries(strategyRules).map(([group,label])=>`<fieldset class="strategy-rule-group"><legend>${label}规则</legend>${(definition.rules[group]||[]).map((rule,index)=>`<div class="strategy-rule" data-rule-row data-group="${group}" data-index="${index}"><div class="form-grid"><label>来源类型<select data-rule-field="kind">${strategyOptions(strategyKinds,rule.kind)}</select></label><label>定义状态<select data-rule-field="state">${strategyOptions(strategyRuleStates,rule.state)}</select></label></div><label>规则内容<textarea data-rule-field="text" required>${esc(rule.text)}</textarea></label><label>出处 / 个人说明<textarea data-rule-field="citation" required>${esc(rule.citation)}</textarea></label><button type="button" data-action="strategy-remove-rule" data-group="${group}" data-index="${index}">移除此条${label}规则</button></div>`).join('')}<button type="button" data-action="strategy-add-rule" data-group="${group}">添加${label}规则</button></fieldset>`).join('')}
+      <div class="actions"><button type="submit" class="primary" ${state.strategyWriting?'disabled':''}>保存新版本草稿</button><button type="button" data-action="strategy-discard" ${state.strategyWriting?'disabled':''}>放弃未保存编辑</button></div></form></section>`;
+  }
+  function strategyRunEvidence(doc){
+    const key=`${doc.strategy_id}:${doc.version}`, result=state.strategyRunEvidence?.[key];
+    return `<section aria-label="运行证据"><h3>v${doc.version} 的运行证据</h3><p class="muted">外部登记，未经核验，不代表已实现或通过验证。数据指纹及代码版本由登记者提供，当前不核验对应文件。</p><button data-action="strategy-runs">读取 / 刷新本版本证据</button>${result?.error?`<p role="alert">读取失败：${esc(result.error)}。请重试。</p>`:''}${result?.rows?result.rows.length?result.rows.map(row=>{const m=row.manifest;return `<article><h4>${esc(m.run_id)} · ${m.stage==='backtest'?'回测':'样本外'} · ${esc(({completed:'完成',failed:'失败',cancelled:'取消',inconclusive:'不确定'})[m.outcome])}</h4><p>${esc(m.summary)}</p><p class="muted">登记人：${esc(m.recorded_by)} · ${esc(row.recorded_at)} · 外部记录未核验</p><details><summary>数据、参数、代码及完整运行记录</summary><pre class="strategy-run-manifest">${esc(JSON.stringify(row,null,2))}</pre></details></article>`;}).join(''):'<p>本版本尚无登记记录，不代表没有风险或验证已通过。</p>':'<p class="muted">尚未读取本版本证据。</p>'}</section>`;
+  }
+  function strategyReview(){
+    const doc=state.strategySelected;if(!doc)return '';
+    const latest=state.strategyHistory?.[0];
+    return `<section class="panel strategy-panel" aria-label="策略版本详情"><h2>${esc(doc.definition.name)} · v${doc.version} · ${strategyStatus(doc)}</h2><p class="muted">本地记录时间：${esc(doc.created_at)}。确认${doc.status==='confirmed'?'已完成':'未完成'} · 实现未完成 · 回测未评估 · 样本外未评估</p>${doc.confirmation?`<p>确认人：${esc(doc.confirmation.by)} · ${esc(doc.confirmation.at)} · 对应草稿 v${doc.confirmation.draft_version}</p>`:''}
+      <div class="actions strategy-versions" aria-label="历史版本">${(state.strategyHistory||[]).map(item=>`<button data-action="strategy-version" data-version="${item.version}" ${item.version===doc.version?'disabled':''}>v${item.version} · ${strategyStatus(item)}</button>`).join('')}</div>
+      <dl class="strategy-scope">${Object.entries(strategyFields).map(([key,label])=>`<dt>${label}</dt><dd>${esc(doc.definition[key]||'未填写')}</dd>`).join('')}</dl>
+      ${strategyRunEvidence(doc)}
+      ${Object.entries(strategyRules).map(([group,label])=>`<h3>${label}规则</h3>${doc.definition.rules?.[group]?.length?`<ul>${doc.definition.rules[group].map(rule=>`<li><p>${esc(rule.text)}</p><p class="muted">${esc(strategyKinds[rule.kind])} · ${esc(strategyRuleStates[rule.state])} · 出处：${esc(rule.citation)}</p></li>`).join('')}</ul>`:'<p class="muted">尚未填写</p>'}`).join('')}
+      ${doc.version===latest?.version&&!state.strategyDraft?`<button data-action="strategy-edit">从此版本编辑</button>${doc.status==='draft'?`<form id="strategy-confirm-form"><p>请先逐项核对以上已保存版本。确认只代表接受该定义，不代表已实现或有效；缺少范围、任一类规则或仍有待定义规则时会拒绝确认。</p><label>确认人<input name="confirmed_by" required autocomplete="off"></label><label class="strategy-ack"><input type="checkbox" required>我已核对本版本的范围、交易时点、七类规则及出处</label><button type="submit" ${state.strategyWriting?'disabled':''}>确认已保存的 v${doc.version}</button></form>`:''}`:'<p class="muted">历史版本只读；有未保存编辑时请先保存或放弃编辑。</p>'}</section>`;
+  }
+  function strategies(){
+    return `<div class="page-head"><div><h1>策略管理</h1><p class="muted">明确范围、规则和出处，再逐版核对。当前只管理定义，不生成信号或运行回测。</p></div><button data-action="strategy-new" ${state.strategyDraft||state.strategyWriting?'disabled':''}>新建策略</button></div>
+      ${strategyEditor()}<section aria-label="策略列表"><div class="section-head"><h2>已保存策略</h2><button data-action="strategies-reload" ${state.strategiesLoading?'disabled':''}>刷新列表</button></div>${state.strategiesError?`<p role="alert">读取失败：${esc(state.strategiesError)}。请刷新重试。</p>`:''}${state.strategiesLoading?'<p role="status">正在读取策略…</p>':''}${!state.strategiesLoading&&!state.strategiesError&&state.strategies?.length===0?'<p class="empty">尚未保存策略。</p>':''}
+      ${(state.strategies||[]).map(doc=>`<article class="panel strategy-list-item"><h3>${esc(doc.definition.name)}</h3><p>v${doc.version} · ${strategyStatus(doc)} · 实现未完成 · 回测未评估 · 样本外未评估</p><button data-action="strategy-open" data-strategy="${esc(doc.strategy_id)}">查看版本与规则</button></article>`).join('')}</section>${strategyReview()}`;
+  }
+  async function strategyAction(action,target){
+    if(state.strategyWriting)return;
+    state.strategyRead=null;
+    if(action==='strategies-reload'){await loadStrategies();return;}
+    captureStrategyDraft();
+    if(action==='strategy-runs'){
+      const doc=state.strategySelected, key=`${doc.strategy_id}:${doc.version}`;
+      const marker={};state.strategyRead=marker;
+      let result;
+      try{result={rows:await api('list_strategy_runs',doc.strategy_id,doc.version)};}
+      catch(error){result={error:error.message};}
+      if(state.strategyRead!==marker)return;
+      captureStrategyDraft();state.strategyRunEvidence??={};state.strategyRunEvidence[key]=result;
+    }
+    if(action==='strategy-new'){if(state.strategyDraft)return;state.strategyDraft={version:0,definition:{rules:{}}};}
+    if(action==='strategy-discard')state.strategyDraft=null;
+    if(action==='strategy-edit'){
+      if(state.strategyDraft)return;
+      const doc=state.strategySelected;state.strategyDraft={strategy_id:doc.strategy_id,version:doc.version,definition:JSON.parse(JSON.stringify(doc.definition))};
+      state.strategyDraft.definition.rules??={};
+    }
+    if(action==='strategy-add-rule'){const rules=state.strategyDraft.definition.rules;rules[target.dataset.group]??=[];rules[target.dataset.group].push({kind:'personal',state:'pending',text:'',citation:''});}
+    if(action==='strategy-remove-rule')state.strategyDraft.definition.rules[target.dataset.group].splice(Number(target.dataset.index),1);
+    if(action==='strategy-open'){
+      const marker={};state.strategyRead=marker;
+      const history=await api('strategy_history',target.dataset.strategy);
+      if(state.strategyRead!==marker)return;
+      captureStrategyDraft();
+      state.strategyHistory=history;state.strategySelected=history[0];
+    }
+    if(action==='strategy-version')state.strategySelected=state.strategyHistory.find(doc=>doc.version===Number(target.dataset.version));
+    // Draft values have already been captured; do not read the old DOM after mutating rows.
+    if(state.page==='strategies')render();
+  }
+  async function saveStrategyForm(form){
+    if(state.strategyWriting)return;
+    state.strategyRead=null;
+    captureStrategyDraft();state.strategyWriting=true;
+    try{
+      let doc;
+      if(form.id==='strategy-form'){
+        const draft=state.strategyDraft;
+        doc=await api('save_strategy',draft.definition,draft.strategy_id||null,draft.version);
+        state.strategyDraft=null;
+      }else{
+        const selected=state.strategySelected;
+        doc=await api('confirm_strategy',selected.strategy_id,selected.version,form.elements.confirmed_by.value);
+      }
+      // The write is successful even if a subsequent history/list read fails.
+      state.strategySelected=doc;state.strategyHistory=[doc,...(state.strategyHistory||[]).filter(item=>item.strategy_id===doc.strategy_id)];
+      await loadStrategies();toast(doc.status==='confirmed'?'已确认定义；实现与有效性仍待验证。':'已保存新版本草稿。');
+    }finally{state.strategyWriting=false;renderStrategies();}
   }
   async function loadDividends() {
     const results=await Promise.allSettled([api('dividend_screen'),api('dividend_watchlist')]);
@@ -369,6 +502,30 @@
     $('#holding-stock-match').className='stock-match';$('#holding-stock-match').textContent='输入代码后自动识别名称与市场';clearValidation(form);$('#holding-dialog').showModal();form.elements.ticker.focus();if(ticker)resolveStockField(form.elements.ticker);
   }
   async function act(action, target) {
+    if(action.startsWith('strategy-')||action==='strategies-reload'){await strategyAction(action,target);return;}
+    if(['book-parse','book-search','book-citation'].includes(action)){
+      const id=target.dataset.book;if(state.bookTextBusy.has(id))return;
+      state.bookTextBusy.add(id);
+      const text=state.bookText[id]??={};rememberDrafts();text.error='';
+      try{
+        if(action==='book-parse'){
+          if(state.bookParsing.has(id))return;state.bookParsing.add(id);renderBooks();
+          await api('parse_book_text',id);text.history=await api('book_text_history',id);
+        }else if(action==='book-search'){
+          const parse=document.querySelector(`[data-book-parse="${id}"]`).value,query=document.querySelector(`[data-book-query="${id}"]`).value;
+          delete text.results;delete text.citation;
+          text.results=await api('search_book_text',parse,query);
+        }else text.citation=await api('book_text_citation',target.dataset.parse,Number(target.dataset.ordinal));
+      }catch(error){text.error=error.message;}
+      finally{state.bookTextBusy.delete(id);state.bookParsing.delete(id);renderBooks();}return;
+    }
+    if(action==='books-reload'){await loadBooks();return;}
+    if(action==='book-verify'){
+      const id=target.dataset.book;if(state.bookVerifying.has(id))return;
+      state.bookVerifying.add(id);delete state.bookChecks[id];renderBooks();
+      try{state.bookChecks[id]=await api('verify_book',id);}
+      finally{state.bookVerifying.delete(id);renderBooks();}return;
+    }
     if(action==='entry-reload'){await loadEntryPlan();return;}
     if(action==='entry-research'){state.drafts['analysis-ticker']=target.dataset.code;state.drafts['analysis-date']=localDate();go('analysis');return;}
     if(action==='dividend-watch'){
@@ -459,7 +616,17 @@
     const submit=form.querySelector('[type=submit]');if(submit)submit.disabled=true;
     try {
       const values=Object.fromEntries(new FormData(form));
-      if(form.id==='entry-preferences-form'){
+      if(form.id==='strategy-form'||form.id==='strategy-confirm-form')await saveStrategyForm(form);
+      else if(form.id==='book-form'){
+        if(state.bookRegistering)return;
+        rememberDrafts();state.bookRegistering=true;
+        try{
+          const result=await api('register_book',values);
+          if(result.cancelled){toast('已取消选择，登记信息已保留。');return;}
+          await loadBooks();toast(result.duplicate?'此文件已登记，已保留原记录。':'原文已登记，解析与索引尚未开始。');
+        }finally{state.bookRegistering=false;renderBooks();}
+      }
+      else if(form.id==='entry-preferences-form'){
         await api('save_entry_preferences',values);
         for(const key of ['entry-capital','entry-target','entry-position','entry-horizon'])delete state.drafts[key];
         await loadEntryPlan(false);toast('个人计划已保存。');
