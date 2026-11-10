@@ -13,6 +13,20 @@ SCOPE_FIELDS = ('name', 'source', 'market', 'universe', 'timeframe', 'holding_pe
                 'execution_price')
 
 
+def validate_timing(value):
+    """An explicit, deliberately narrow contract; prose is never compiled into it."""
+    fields = {'observation', 'confirmation_delay_seconds', 'execution', 'price_basis', 'price_unit'}
+    if (not isinstance(value, dict) or set(value) != fields
+            or value['observation'] != 'completed_bar'
+            or value['execution'] != 'next_session_open'
+            or type(value['confirmation_delay_seconds']) is not int
+            or not 0 <= value['confirmation_delay_seconds'] <= 31536000
+            or not all(isinstance(value[k], str) and value[k].strip()
+                       for k in ('price_basis', 'price_unit'))):
+        raise ValueError('时序契约需明确完成观测、确认延迟、下一时段开盘及价格口径和单位。')
+    return value
+
+
 def validate_definition(value):
     if not isinstance(value, dict):
         raise ValueError('策略定义必须是对象。')
@@ -26,6 +40,8 @@ def validate_definition(value):
     for field in SCOPE_FIELDS:
         if field in result and (not isinstance(result[field], str) or not result[field].strip()):
             raise ValueError(f'策略字段无效：{field}')
+    if 'timing' in result:
+        validate_timing(result['timing'])
     rules = result.get('rules', {})
     if not isinstance(rules, dict) or set(rules) - set(RULE_FIELDS):
         raise ValueError('策略规则分类无效。')

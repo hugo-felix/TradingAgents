@@ -256,6 +256,21 @@ class DesktopAPI:
         return StrategyCheckRegistry(self._store).history(strategy_id, version)
 
     @response
+    def assess_strategy_timing(self, check_id, evidence):
+        from tradingagents.desktop.strategy_timing import StrategyTimingRegistry
+        return StrategyTimingRegistry(self._store).assess(check_id, evidence)
+
+    @response
+    def get_strategy_timing(self, audit_id):
+        from tradingagents.desktop.strategy_timing import StrategyTimingRegistry
+        return StrategyTimingRegistry(self._store).get(audit_id)
+
+    @response
+    def strategy_timing_history(self, check_id):
+        from tradingagents.desktop.strategy_timing import StrategyTimingRegistry
+        return StrategyTimingRegistry(self._store).history(check_id)
+
+    @response
     def preview_actual_trades(self, csv_text, source_label):
         from tradingagents.desktop.trades import TradeLedger
         return TradeLedger(self._store).preview(csv_text, source_label)
