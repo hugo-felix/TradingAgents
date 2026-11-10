@@ -9,6 +9,9 @@ own date.
 
 from __future__ import annotations
 
+import json
+from datetime import date
+from decimal import Decimal
 from unittest import mock
 
 import pytest
@@ -17,6 +20,88 @@ from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.vendors import sec_edgar
 
 _REAL_FETCH = sec_edgar._fetch_json
+
+
+def test_filing_evidence_preserves_selected_revision_and_original_units():
+    old = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30')
+    amended = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2011-01-01')
+    before, after = old.facts[0], amended.facts[0]
+    assert before.value == Decimal('39572000000')
+    assert after.value == Decimal('36171000000')
+    assert before.unit == after.unit == 'USD'
+    assert before.provenance.period_end == date(2008, 9, 27)
+    assert before.provenance.published_date == date(2008, 11, 5)
+    assert after.provenance.published_date == date(2010, 1, 25)
+    assert before.provenance.first_published_date is None
+    assert before.provenance.revision is None  # absent in this fixture, never invented
+    assert before.provenance.fetched_at == after.provenance.fetched_at
+    assert before.provenance.snapshot_sha256 == after.provenance.snapshot_sha256
+    assert sec_edgar.get_balance_sheet('AAPL', 'annual', '2009-06-30') == old.content
+
+
+def test_quarter_evidence_matches_displayed_span_and_preserves_accession(monkeypatch):
+    from copy import deepcopy
+
+    payload = deepcopy(FACTS)
+    rows = payload['facts']['us-gaap']['RevenueFromContractWithCustomerExcludingAssessedTax']['units']['USD']
+    rows[0]['accn'] = '0000000000-26-000001'
+    monkeypatch.setattr(sec_edgar, '_fetch_json',
+                        lambda url: TICKER_MAP if 'company_tickers' in url else payload)
+    result = sec_edgar.get_income_statement_result('AAPL', 'quarterly', '2026-06-01')
+    revenue = next(fact for fact in result.facts if fact.label == 'Revenue')
+    assert revenue.value == Decimal('81300000000')
+    assert revenue.provenance.period_start == date(2025, 10, 1)
+    assert revenue.provenance.revision == '0000000000-26-000001'
+    assert all(f.value != Decimal('158900000000') for f in result.facts)
+
+
+def test_legacy_cache_has_unknown_acquisition_time(tmp_path):
+    directory = tmp_path / 'sec_edgar'
+    directory.mkdir()
+    (directory / 'CIK0000320193.json').write_text(json.dumps(FACTS), encoding='utf-8')
+    fact = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30').facts[0]
+    assert fact.provenance.fetched_at is None
+
+
+def test_cached_snapshot_keeps_acquisition_time_and_hash_until_refresh(monkeypatch, tmp_path):
+    first = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30').facts[0]
+    monkeypatch.setattr(sec_edgar, '_fetch_json', lambda url: pytest.fail('unexpected refetch'))
+    second = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30').facts[0]
+    assert first == second
+    envelope = json.loads((tmp_path / 'sec_edgar' / 'CIK0000320193.json').read_text())
+    assert envelope['fetched_at'] == first.provenance.fetched_at.isoformat()
+
+
+def test_routed_filing_metadata_reaches_grounding_and_rendering(monkeypatch):
+    from langchain_core.messages import ToolMessage
+
+    from tradingagents.agents.evidence import collect_tool_evidence
+    from tradingagents.agents.grounding import facts_from_evidence, grounding_instruction
+    from tradingagents.dataflows import router
+    from tradingagents.dataflows.facts import render_facts
+
+    monkeypatch.setattr(router, 'get_vendor', lambda *args: 'sec_edgar')
+    result = router.route_to_vendor_result('get_balance_sheet', 'AAPL', 'annual', '2009-06-30')
+    content, artifact = result.as_tool_output()
+    evidence = collect_tool_evidence('fundamentals', [ToolMessage(
+        content, name='get_balance_sheet', tool_call_id='filing', artifact=artifact)])
+    restored = facts_from_evidence(evidence)
+    assert list(restored.values()) == list(result.facts)
+    assert result.facts[0].provenance.snapshot_sha256 in grounding_instruction(evidence)
+    rendered = render_facts(restored)
+    assert 'published_date' in rendered and '2008-11-05' in rendered
+    assert '39572000000' in rendered
+
+
+def test_incompatible_currency_periods_are_not_relabelled():
+    facts = {'Assets': {'units': {
+        'USD': [_fact('2023-12-31', 100, '2024-02-01')],
+        'EUR': [_fact('2024-12-31', 200, '2025-02-01')],
+    }}}
+    from tradingagents.dataflows.errors import VendorUnavailableError
+
+    with pytest.raises(VendorUnavailableError, match='incompatible units'):
+        sec_edgar._as_of(facts, ('Assets',), '2025-03-01', ((300, 400),))
 
 TICKER_MAP = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}
 
@@ -124,8 +209,8 @@ def test_company_facts_are_fetched_once_per_company_not_once_per_date(tmp_path, 
     calls = []
     monkeypatch.setattr(sec_edgar, "_fetch_json",
                         lambda url: calls.append(url) or (TICKER_MAP if "company_tickers" in url else FACTS))
-    for date in ("2024-11-15", "2025-01-15", "2025-06-15"):
-        sec_edgar.get_balance_sheet("AAPL", "annual", date)
+    for cutoff in ("2024-11-15", "2025-01-15", "2025-06-15"):
+        sec_edgar.get_balance_sheet("AAPL", "annual", cutoff)
     assert len([u for u in calls if "companyfacts" in u]) == 1
 
 

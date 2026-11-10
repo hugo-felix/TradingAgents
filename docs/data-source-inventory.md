@@ -71,7 +71,7 @@
 
 [errors.py](../tradingagents/dataflows/errors.py) 区分 `VendorUnavailableError`（请求/限流等故障）、`VendorNotConfiguredError`（未配置）和 `NoMarketDataError`（无可用/陈旧数据）。路由任一供应商成功即返回；全链失败时，服务故障优先返回 `DATA_UNAVAILABLE`；干净无数据返回 `NO_DATA_AVAILABLE`，不会填零。未分类异常与干净无数据混合也按故障处理；未配置与无数据混合仍可返回无数据并记录配置错误。没有可用结果且只剩真实异常时，核心类别抛出，宏观/公告/估值/预测等可选类别降级。返回 sentinel 或 withheld 文字不会继续寻找另一个供应商，调用者必须保留其中的限制。
 
-[facts.py](../tradingagents/dataflows/facts.py) 的 `Fact` 已区分数值/缺失/未核验，保留单位、期间、口径、币种、限定条件和来源；只有部分适配器产生事实，纯文本结果不能自动获得结构化字段。当前没有统一的事实发生日、首次公开日、获取日及修订身份，也没有统一的数据集清单、缓存命中/源切换结构化状态。
+[facts.py](../tradingagents/dataflows/facts.py) 的 `Fact` 已区分数值/缺失/未核验，保留单位、期间、口径、币种、限定条件和来源；只有部分适配器产生事实，纯文本结果不能自动获得结构化字段。现已增加可选 `FactProvenance`，SEC 财报路径接入期间、该版本申报日、获取时间、accession（若有）及规范化 JSON 指纹；契约和限制见 [data-provenance.md](data-provenance.md)。其他适配器尚未接入，首次公开时间仍可能未知，也没有统一的数据集清单、缓存命中/源切换结构化状态。
 
 后续优先扩展上述适配层：B02 统一行情及单位契约；B03 按实际试点核对个股/基准/行业覆盖；B04 追加不可变修订与可得时间；B05 核对历史股票池/停牌/退市；B06 将缓存、陈旧及源切换状态暴露给界面；B07 明确原始/调整价格和公司行动。本文只完成 B01 盘点，不代表 B02–B07 或供应商线上验收完成。
 

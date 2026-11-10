@@ -181,7 +181,8 @@ def test_prompt_catalog_shares_metadata_without_losing_fact_semantics():
     assert g._table(facts).count(original['source_url']) == 1
     for row in catalog['facts']:
         fact_id, label, value, period, status, index = row
-        unit, currency, basis, qualifiers, url = catalog['metadata'][index]
+        unit, currency, basis, qualifiers, url, provenance = catalog['metadata'][index]
+        assert provenance is None
         fact = facts[fact_id]
         assert [label, value, period, status] == [fact.label,
             format(fact.value, 'f') if fact.value is not None else None, fact.period, fact.status]

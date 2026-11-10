@@ -106,14 +106,15 @@ def _table(facts):
     metadata = []
     rows = []
     for fact_id, fact in facts.items():
-        context = [fact.unit, fact.currency, fact.basis, fact.qualifiers, fact.source_url]
+        context = [fact.unit, fact.currency, fact.basis, fact.qualifiers, fact.source_url,
+                   fact.provenance.model_dump(mode='json') if fact.provenance else None]
         if context not in metadata:
             metadata.append(context)
         rows.append([fact_id, fact.label,
                      format(fact.value, 'f') if fact.value is not None else None,
                      fact.period, fact.status, metadata.index(context)])
     return json.dumps({
-        'metadata_columns': ['unit', 'currency', 'basis', 'qualifiers', 'source_url'],
+        'metadata_columns': ['unit', 'currency', 'basis', 'qualifiers', 'source_url', 'provenance'],
         'metadata': metadata,
         'fact_columns': ['fact_id', 'label', 'value', 'period', 'status', 'metadata_index'],
         'facts': rows,

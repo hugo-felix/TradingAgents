@@ -25,9 +25,9 @@ from tradingagents.dataflows.vendors.polymarket import (
     get_prediction_markets as get_polymarket_prediction_markets,
 )
 from tradingagents.dataflows.vendors.sec_edgar import (
-    get_balance_sheet as get_sec_edgar_balance_sheet,
-    get_cashflow as get_sec_edgar_cashflow,
-    get_income_statement as get_sec_edgar_income_statement,
+    get_balance_sheet_result as get_sec_edgar_balance_sheet,
+    get_cashflow_result as get_sec_edgar_cashflow,
+    get_income_statement_result as get_sec_edgar_income_statement,
 )
 from tradingagents.dataflows.vendors.yahoo.fundamentals import (
     get_balance_sheet as get_yfinance_balance_sheet,

@@ -17,12 +17,14 @@ EDGAR's ticker map falls through to the next configured vendor.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
 import time
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import requests
@@ -30,6 +32,7 @@ import requests
 from tradingagents import __version__
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.facts import Fact, FactProvenance, SourceResult
 from tradingagents.dataflows.files import replace_file
 
 logger = logging.getLogger(__name__)
@@ -121,16 +124,36 @@ def _fetch_json(url: str) -> dict:
 
 
 def _cached_json(url: str, name: str) -> dict:
+    return _cached_snapshot(url, name)[0]
+
+
+def _cached_snapshot(url: str, name: str) -> tuple[dict, datetime | None]:
+    """Cache acquisition time with the payload atomically, never infer it from mtime.
+
+    Legacy bare JSON remains readable, with unknown acquisition time. Hashes
+    identify canonical decoded JSON, not the original HTTP response bytes.
+    """
     path = Path(get_config()["data_cache_dir"]) / "sec_edgar" / name
     if path.exists() and time.time() - path.stat().st_mtime < _CACHE_TTL_SECONDS:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except ValueError:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(cached, dict) and cached.get('_sec_cache_version') == 1:
+                acquired = datetime.fromisoformat(cached['fetched_at'])
+                if acquired.utcoffset() is None or not isinstance(cached['payload'], dict):
+                    raise ValueError('Invalid cached snapshot')
+                return cached['payload'], acquired
+            if isinstance(cached, dict) and '_sec_cache_version' not in cached:
+                return cached, None
+        except (ValueError, KeyError, TypeError):
             pass  # a truncated file is a miss, not a failure
     data = _fetch_json(url)
+    if not isinstance(data, dict):
+        raise VendorUnavailableError('SEC EDGAR returned a non-object response')
+    fetched_at = datetime.now(UTC)
+    envelope = {'_sec_cache_version': 1, 'fetched_at': fetched_at.isoformat(), 'payload': data}
     path.parent.mkdir(parents=True, exist_ok=True)
-    replace_file(path, lambda temp: Path(temp).write_text(json.dumps(data), encoding="utf-8"))
-    return data
+    replace_file(path, lambda temp: Path(temp).write_text(json.dumps(envelope), encoding="utf-8"))
+    return data, fetched_at
 
 
 def cik_for(ticker: str) -> str | None:
@@ -162,7 +185,14 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
     duration fact (revenue, cash flow) must cover one of ``spans``; an instant
     fact (a balance) has no span and serves any.
     """
-    values: dict[tuple[str, int], float] = {}
+    selected, unit = _selected_as_of(facts, tags, as_of_date, spans, forms)
+    return {key: fact['val'] for key, (fact, _) in selected.items()}, unit
+
+
+def _selected_as_of(facts: dict, tags: tuple[str, ...], as_of_date: str,
+                    spans: tuple[tuple[int, int], ...], forms: tuple[str, ...] = ()):
+    """Preserve the exact selected filing and tag alongside each value."""
+    values = {}
     chosen_unit = "USD"
     # Tags are tried in order and a period keeps the first one that reports it:
     # filers renamed lines over the years, so one tag covers only part of the
@@ -183,18 +213,24 @@ def _as_of(facts: dict, tags: tuple[str, ...], as_of_date: str, spans: tuple[tup
                     latest[key] = fact
             latest = {key: fact for key, fact in latest.items() if key in covered}
             if latest:
+                if values and chosen_unit != unit:
+                    raise VendorUnavailableError('SEC EDGAR line contains incompatible units')
                 chosen_unit = unit
-                values.update({key: fact["val"] for key, fact in latest.items()})
+                values.update({key: (fact, tag) for key, fact in latest.items()})
     return dict(sorted(values.items())), chosen_unit
 
 
-def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> str:
+def _statement_result(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> SourceResult:
     as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
     cik = cik_for(ticker)
     if cik is None:
         raise NoMarketDataError(ticker, ticker, "not a US SEC filer")
 
-    facts = _cached_json(_FACTS_URL.format(cik=cik), f"CIK{cik}.json")
+    url = _FACTS_URL.format(cik=cik)
+    facts, fetched_at = _cached_snapshot(url, f"CIK{cik}.json")
+    snapshot_hash = hashlib.sha256(json.dumps(
+        facts, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
+        allow_nan=False).encode('utf-8')).hexdigest()
     us_gaap = (facts.get("facts") or {}).get("us-gaap")
     if not us_gaap:
         raise NoMarketDataError(ticker, ticker, "US filer with no us-gaap facts")
@@ -206,7 +242,10 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
     else:
         spans, names = (_SPANS["annual"],), [""]
     forms = () if quarterly else _ANNUAL_FORMS
-    lines = {label: _as_of(us_gaap, tags, as_of_date, spans, forms) for label, tags in _STATEMENTS[kind]}
+    selected = {label: _selected_as_of(us_gaap, tags, as_of_date, spans, forms)
+                for label, tags in _STATEMENTS[kind]}
+    lines = {label: ({key: row['val'] for key, (row, _) in rows.items()}, unit)
+             for label, (rows, unit) in selected.items()}
     # Each row takes the shortest span it reports for a period, and a column
     # holds one span of one period, so a row filed only to date keeps its figure
     # beside a row filed by quarter.
@@ -230,13 +269,46 @@ def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -
     # read a column off (#1517).
     rows = [",".join(["Period"] + [label if unit == "USD" else f"{label} ({unit})"
                                    for label, (_, unit) in tagged.items()])]
+    source_facts = []
     for end, index in periods:
         cells = []
         for label, (values, unit) in tagged.items():
             value = values.get((end, index)) if chosen[label].get(end) == index else None
             cells.append("" if value is None else _millions(value) if unit == "USD" else f"{value:.2f}")
+            if value is not None:
+                filing, tag = selected[label][0][(end, index)]
+                source_facts.append(Fact(
+                    key=f'{tag}.{end}.{index}', label=label, value=Decimal(str(value)),
+                    unit=unit, currency='USD' if unit in ('USD', 'USD/shares') else None,
+                    period=f"{filing['start']}/{end}" if 'start' in filing else end,
+                    basis='SEC us-gaap as filed; original units, not millions',
+                    source_url=url,
+                    qualifiers=('Publication has date precision only; intraday availability unknown.',
+                                'First public release is unknown; filed date identifies this revision.',
+                                'SHA-256 identifies canonical decoded companyfacts JSON.'),
+                    provenance=FactProvenance(
+                        period_start=filing.get('start'), period_end=end,
+                        published_date=filing['filed'], fetched_at=fetched_at,
+                        revision=filing.get('accn') or None, snapshot_sha256=snapshot_hash),
+                ))
         rows.append(",".join([end + names[index]] + cells))
-    return header + "\n".join(rows) + "\n"
+    return SourceResult(header + "\n".join(rows) + "\n", tuple(source_facts))
+
+
+def _statement(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> str:
+    return _statement_result(kind, ticker, freq, as_of_date, title).content
+
+
+def get_balance_sheet_result(ticker: str, freq: str = 'quarterly', as_of_date: str | None = None):
+    return _statement_result('balance_sheet', ticker, freq, as_of_date, 'Balance Sheet')
+
+
+def get_income_statement_result(ticker: str, freq: str = 'quarterly', as_of_date: str | None = None):
+    return _statement_result('income_statement', ticker, freq, as_of_date, 'Income Statement')
+
+
+def get_cashflow_result(ticker: str, freq: str = 'quarterly', as_of_date: str | None = None):
+    return _statement_result('cashflow', ticker, freq, as_of_date, 'Cash Flow Statement')
 
 
 def _millions(value: float) -> str:

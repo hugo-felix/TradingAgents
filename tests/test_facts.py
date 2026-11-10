@@ -4,7 +4,19 @@ from decimal import Decimal
 import pytest
 from pydantic import ValidationError
 
-from tradingagents.dataflows.facts import Fact, SourceResult, render_facts
+from tradingagents.dataflows.facts import Fact, FactProvenance, SourceResult, render_facts
+
+
+@pytest.mark.parametrize('changes', [
+    {'period_start': '2027-01-01'},
+    {'fetched_at': '2026-01-01T12:00:00'},
+    {'published_date': '2026-01-01', 'first_published_date': '2026-01-02'},
+    {'snapshot_sha256': 'not-a-hash'},
+])
+def test_provenance_rejects_ambiguous_or_inconsistent_metadata(changes):
+    with pytest.raises(ValidationError):
+        FactProvenance.model_validate({
+            'period_end': '2025-12-31', 'snapshot_sha256': 'a' * 64, **changes})
 
 
 def fact(**changes):
