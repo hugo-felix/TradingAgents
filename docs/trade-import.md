@@ -71,4 +71,6 @@ Python 服务对应 `preview`、`import_csv`、`list_fills`、`get_import`。同
 
 JSON 文件最大 64 KiB。第一次保存预期版本为 0，以后使用查询得到的最新版本；过期写入会失败，应先重新读取再决定是否重试。每次保存都是完整的新版本，省略字段或填写 `null` 只解除新版本的关联，旧版本仍可读取；不提供覆盖和删除。已存在但未补录的成交查询关联返回 `null`，历史列表为空；未知成交会报错。输出可能包含私人理由和报告全文，请妥善保管。
 
+实际成交还可登记[个人复盘与规则草案](trade-reviews.md)，分别记录研究、规则、执行意见及不确定性，保留登记时关联快照；不会改写历史关联或自动判定交易对错。
+
 桌面桥接提供 `get_actual_trade(trade_id)`、`record_trade_context(trade_id, context, expected_version=0)`、`get_trade_context(trade_id, version=None)` 和 `trade_context_history(trade_id, limit=100, offset=0)`。Python 服务为 `TradeContextRegistry(store)` 的 `record/get/history`，保存到独立的 `actual_fill_contexts` 表，随工作空间备份恢复。当前没有关联管理页面。

@@ -311,6 +311,21 @@ class DesktopAPI:
         from tradingagents.desktop.operations import OperationLedger
         return OperationLedger(self._store).list(kind, ticker, limit=limit, offset=offset)
 
+    @response
+    def record_trade_review(self, trade_id, notes, request_id):
+        from tradingagents.desktop.reviews import ReviewRegistry
+        return ReviewRegistry(self._store).record(trade_id, notes, request_id)
+
+    @response
+    def get_trade_review(self, review_id):
+        from tradingagents.desktop.reviews import ReviewRegistry
+        return ReviewRegistry(self._store).get(review_id)
+
+    @response
+    def create_review_strategy(self, review_id, definition):
+        from tradingagents.desktop.reviews import ReviewRegistry
+        return ReviewRegistry(self._store).create_draft(review_id, definition)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library

@@ -50,6 +50,13 @@
 | R01；R02 真实成交隔离部分 | Codex / 当前 Windows 工作区 | main（本地，第十二批） | `trades.py`、离线 CLI、桌面桥接与 `tests/test_desktop_trades.py`；标准 CSV 预览、幂等导入和原始批次审计，不更新手工持仓；计划/模拟台账尚未实现 |
 | R04 成交依据版本 | Codex / 当前 Windows 工作区 | main（第十三批） | `trade_contexts.py`、成交 CLI/桌面 API 与独立回归；报告原文、明确策略版本及个人理由追加保存，支持无关联历史成交 |
 | R02 计划与模拟隔离 | Codex / 当前 Windows 工作区 | main（第十四批） | `operations.py`、CLI/桌面 API 与 `tests/test_desktop_operations.py`；独立非真实操作台账，不生成实际成交或变更持仓 |
+| R05/R08 个人复盘基础 | Codex / 当前 Windows 工作区 | main（第十五批） | `reviews.py` 与桌面 API：明确填写个人分维度意见，从复盘生成待定义个人规则；无自动评价或复盘页面 |
+
+### 2026-11-10 第十五批实施说明
+
+- R05/R08 基础：分别保存研究、规则、执行意见和必填不确定性，未评估保留为空；追加个人复盘与成交/关联快照，禁止幂等冲突覆盖。
+- 由明确填写的规则生成个人待定义草案，保留复盘快照与指纹，沿用策略编辑和具名确认的版本流程。无自动评价、复盘管理页面或收益归因；文档见 `docs/trade-reviews.md`，整项暂不勾选。
+- 验证：复盘及策略定向回归 18 项通过；Windows 默认套件 2488 passed、7 skipped、1 deselected、100 subtests passed。涉及 Python 文件 Ruff 与差异检查通过；未执行 integration、界面、打包或其他平台验收。
 
 ### 2026-11-10 第十四批实施说明
 
