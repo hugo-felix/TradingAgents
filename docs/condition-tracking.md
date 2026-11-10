@@ -2,7 +2,15 @@
 
 `ConditionTrackingRegistry` 对用户主动提交的不可变条件检查做顺序跟踪。计划绑定确切策略版本、条件组与零起始序号、证券、市场、周期、价格口径、来源、已有序列单位及检查引擎。来源或版本变化须另建计划；数据修订版本可以变化，但同一观测时刻的修订不能增加连续计数。
 
-计划由具名用户明确设置连续次数（1–100）和含时区的到期时间，起始时间取种子检查的 `as_of`。种子仅作绑定，创建不会自动评估；可显式提交种子作为第一次记录。计划不可变，相同配置幂等创建，改变配置另建计划。当前没有提前取消或自动过期任务，到期状态在提交检查时计算。
+计划由具名用户明确设置连续次数（1–100）和含时区的到期时间，起始时间取种子检查的 `as_of`。种子仅作绑定，创建不会自动评估；可显式提交种子作为第一次记录。计划配置不可变，相同配置幂等创建，改变配置另建计划。可主动停止计划；当前没有自动过期任务，到期状态在提交检查时计算。
+
+## 停止跟踪
+
+停止时填写具名操作人（最多 200 字）和原因（最多 2000 字）。系统另存停止时刻及停止前最后一个事件标识，不改写原计划配置、计数或历史证据。停止与评估在同一 SQLite 写锁下串行执行：先完成的评估属于停止前历史，停止后拒绝任何新的评估，包含历史截止时刻的数据补交。停止是当前管理操作，不按检查的历史 `as_of` 回溯生效。
+
+相同操作人和原因重试返回原停止记录；更换操作人或原因不能覆盖记录。停止后仍可读取全部历史，也可幂等重试已有检查并取得原结果；原结果的 `hit=true` 只代表当时命中，不构成新事件。当前不提供恢复已停止计划；需要继续时创建不同配置或不同种子检查的新计划。用相同配置再次创建仍返回已停止计划，避免误恢复。
+
+`get`、`list` 和幂等 `create` 在已停止计划上附带独立的 `cancellation` 对象；未停止计划保持原格式。停止记录与计划一同备份、恢复。停止不删除研究、修改持仓或撤销历史判断。
 
 ## 判定语义
 
@@ -23,6 +31,7 @@
 2. 可以读取本版本已有计划并选择一项；其他策略或版本的计划不混入列表。计划保留种子、上下文和完整不可变配置。更改配置须创建另一计划。
 3. 选择当前条件检查后，点击“将当前检查提交给此计划”进行一次计算。结果展示计数、命中或暂停原因及完整检查证据；重复提交原检查返回原事件，不增加计数。
 4. 点击“读取 / 刷新此计划历史”读取完整历史。最近状态取已读取历史中的最新事件；重试旧检查不会把最近状态倒退成旧结果。未读取历史时不能据此推断当前状态。点击任一历史记录查看原始条件、来源、观测、水位及前序链。
+5. 放弃或替换计划时，在“停止此计划”填写操作人和原因，点击“保存原因并停止跟踪”。停止后展示独立记录并禁用提交按钮，历史仍可查看；读取或刷新计划可恢复停止状态。界面状态可能落后于其他调用者，后端仍会拒绝已停止计划的新评估。
 
 同一窗口按策略版本保留表单及选择；请求等待期间切换版本，返回后可恢复对应结果。API 失败保留输入及已有证据，方便重试。刷新窗口后，重新读取计划及历史；未保存输入不会保留。计划到期按所提交检查的 `as_of` 计算，界面不把历史计划展示为此刻仍有效，也不自动巡检或发送通知。
 
@@ -41,10 +50,11 @@ create_condition_tracking(check_id, group, index, required_consecutive, expires_
 get_condition_tracking(plan_id)
 list_condition_tracking()
 evaluate_condition_tracking(plan_id, check_id)
+cancel_condition_tracking(plan_id, cancelled_by, reason)
 condition_tracking_history(plan_id)
 ```
 
-底层注册表对应 `create`、`get`、`list`、`evaluate`、`history`。跟踪不会改变原检查、策略验证状态或实际操作记录。
+底层注册表对应 `create`、`get`、`list`、`evaluate`、`cancel`、`history`。跟踪不会改变原检查、策略验证状态或实际操作记录。
 
 ## 离线命令
 
@@ -56,6 +66,7 @@ condition_tracking_history(plan_id)
 .\.venv\Scripts\python.exe -m tradingagents.desktop.condition_tracking --workspace ./output/dev-workspace get PLAN_ID
 .\.venv\Scripts\python.exe -m tradingagents.desktop.condition_tracking --workspace ./output/dev-workspace evaluate PLAN_ID CHECK_ID
 .\.venv\Scripts\python.exe -m tradingagents.desktop.condition_tracking --workspace ./output/dev-workspace history PLAN_ID
+.\.venv\Scripts\python.exe -m tradingagents.desktop.condition_tracking --workspace ./output/dev-workspace cancel PLAN_ID --cancelled-by "测试人" --reason "计划已替换"
 ```
 
 命令拒绝缺失数据库、恢复未完成或正在使用的工作空间；不创建替代空工作空间。

@@ -315,6 +315,11 @@ class DesktopAPI:
         return ConditionTrackingRegistry(self._store).evaluate(plan_id, check_id)
 
     @response
+    def cancel_condition_tracking(self, plan_id, cancelled_by, reason):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).cancel(plan_id, cancelled_by, reason)
+
+    @response
     def condition_tracking_history(self, plan_id):
         from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
         return ConditionTrackingRegistry(self._store).history(plan_id)

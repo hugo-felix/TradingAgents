@@ -60,7 +60,7 @@ def main():
 
         def choose(check):
             conditions.locator(f'[data-check-id="{check["check_id"]}"]').click()
-            panel.locator('form').wait_for()
+            panel.locator(':scope > form').wait_for()
 
         def open_current():
             page.wait_for_selector('.page-head')
@@ -81,7 +81,7 @@ def main():
         panel.locator('[name="condition"]').select_option('entry:0')
         panel.locator('[name="expiry"]').fill('2020-01-08T16:00:00')
         panel.locator('[name="by"]').fill('<img src=x onerror=alert(1)> 测试人')
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="alert"]').wait_for()
         assert api.list_condition_tracking()['data'] == []
         assert panel.locator('[name="by"]').input_value().endswith('测试人')
@@ -96,7 +96,7 @@ def main():
             };
           });
         }""")
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="status"]').wait_for()
         page.locator('[data-action="strategy-version"][data-version="4"]').click()
         assert panel.locator('form').count() == 0
@@ -104,7 +104,7 @@ def main():
         panel.locator('[role="status"]').wait_for(state='detached')
         assert panel.locator('[data-plan-id]').count() == 0
         page.locator('[data-action="strategy-version"][data-version="2"]').click()
-        assert panel.locator('[type="submit"]').is_disabled()
+        assert panel.locator(':scope > form [type="submit"]').is_disabled()
         page.evaluate('window.releaseTracking()')
         panel.locator('[aria-label="所选跟踪计划"]').wait_for()
         assert panel.locator('script,img').count() == 0
@@ -112,7 +112,7 @@ def main():
         assert len(plans) == 1
         plan_id = plans[0]['plan_id']
         assert api.condition_tracking_history(plan_id)['data'] == []
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="status"]').wait_for(state='detached')
         assert len(api.list_condition_tracking()['data']) == 1
         submit()
@@ -147,6 +147,50 @@ def main():
         page.evaluate('window.restoreTracking()')
         panel.locator('[data-tracking="history"]').click()
         panel.locator('[role="status"]').wait_for(state='detached')
+        stop = panel.locator('[data-tracking-stop]')
+        stop.locator('[name="stopBy"]').fill('具名测试人')
+        stop.locator('[name="stopReason"]').fill('<img src=x onerror=alert(1)> 策略已替换')
+        page.evaluate("""() => {
+          const original=window.pywebview.api.cancel_condition_tracking;
+          window.pywebview.api.cancel_condition_tracking=()=>Promise.resolve(
+            {ok:false,error:'停止保存失败'});
+          window.restoreStop=()=>{window.pywebview.api.cancel_condition_tracking=original;};
+        }""")
+        stop.locator('[type="submit"]').click()
+        panel.locator('[role="alert"]:has-text("停止保存失败")').wait_for()
+        assert stop.locator('[name="stopReason"]').input_value().endswith('策略已替换')
+        assert 'cancellation' not in api.get_condition_tracking(plan_id)['data']
+        page.evaluate('window.restoreStop()')
+        page.evaluate("""() => {
+          const original=window.pywebview.api.cancel_condition_tracking;
+          window.pywebview.api.cancel_condition_tracking=(...args)=>new Promise(resolve=>{
+            window.releaseStop=async()=>{
+              window.pywebview.api.cancel_condition_tracking=original;
+              resolve(await original(...args));
+            };
+          });
+        }""")
+        stop.locator('[type="submit"]').click()
+        panel.locator('[role="status"]').wait_for()
+        page.locator('[data-action="strategy-version"][data-version="4"]').click()
+        assert panel.locator('[aria-label="停止跟踪记录"]').count() == 0
+        page.locator('[data-action="strategy-version"][data-version="2"]').click()
+        assert stop.locator('[type="submit"]').is_disabled()
+        page.evaluate('window.releaseStop()')
+        panel.locator('[aria-label="停止跟踪记录"]').wait_for()
+        assert '策略已替换' in panel.locator('[aria-label="停止跟踪记录"]').inner_text()
+        assert panel.locator('[data-tracking="evaluate"]').is_disabled()
+        assert panel.locator('[data-tracking-stop]').count() == 0
+        assert panel.locator('img,script').count() == 0
+        assert len(api.condition_tracking_history(plan_id)['data']) == 3
+        # Same creation identity must preserve the stopped state rather than reactivate it.
+        choose(seed)
+        panel.locator(':scope > form [type="submit"]').click()
+        panel.locator('[role="status"]').wait_for(state='detached')
+        panel.locator('[aria-label="停止跟踪记录"]').wait_for()
+        assert len(api.list_condition_tracking()['data']) == 1
+        panel.locator('[data-tracking="history"]').click()
+        panel.locator('[data-event-id]').first.click()
         for width in (760, 1024, 1440, 2560):
             page.set_viewport_size({'width': width, 'height': 1000})
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), width
@@ -157,6 +201,8 @@ def main():
         assert panel.locator('[aria-label="所选跟踪计划"]').count() == 0
         panel.locator('[data-tracking="plans"]').click()
         panel.locator(f'[data-plan-id="{plan_id}"]').click()
+        panel.locator('[aria-label="停止跟踪记录"]').wait_for()
+        assert panel.locator('[data-tracking="evaluate"]').is_disabled()
         panel.locator('[data-tracking="history"]').click()
         panel.locator('[data-event-id]').first.click()
         assert '暂停判断' in evidence.inner_text()
@@ -164,7 +210,7 @@ def main():
         assert not errors, errors
         print('Condition tracking passed: real API, explicit creation, validation, version isolation, '
               'independent observations, idempotency, pause, evidence, escaping, failure retry, '
-              'pending navigation, reload and four widths.')
+              'stop audit and retry, pending navigation, reload and four widths.')
 
 
 if __name__ == '__main__':

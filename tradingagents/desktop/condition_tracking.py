@@ -68,6 +68,8 @@ class ConditionTrackingRegistry:
             db.execute('''CREATE TABLE IF NOT EXISTS condition_tracking_events (
                 event_id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, check_id TEXT NOT NULL,
                 document TEXT NOT NULL, UNIQUE(plan_id, check_id))''')
+            db.execute('''CREATE TABLE IF NOT EXISTS condition_tracking_cancellations (
+                plan_id TEXT PRIMARY KEY, document TEXT NOT NULL)''')
 
     def create(self, check_id, group, index, required_consecutive, expires_at, created_by):
         if (not isinstance(group, str) or type(index) is not int or index < 0
@@ -103,11 +105,41 @@ class ConditionTrackingRegistry:
 
     def get(self, plan_id):
         with self.store.connect() as db:
-            row = db.execute('SELECT document FROM condition_tracking_plans WHERE plan_id=?',
+            row = db.execute('SELECT p.document, c.document FROM condition_tracking_plans p '
+                             'LEFT JOIN condition_tracking_cancellations c USING (plan_id) '
+                             'WHERE plan_id=?',
                              (plan_id,)).fetchone()
         if row is None:
             raise ValueError('未找到条件跟踪计划。')
-        return json.loads(row[0])
+        document = json.loads(row[0])
+        if row[1]:
+            document['cancellation'] = json.loads(row[1])
+        return document
+
+    def cancel(self, plan_id, cancelled_by, reason):
+        self.get(plan_id)
+        if (not isinstance(cancelled_by, str) or not cancelled_by.strip()
+                or len(cancelled_by) > 200 or not isinstance(reason, str)
+                or not reason.strip() or len(reason) > 2000):
+            raise ValueError('请提供不超过 200 字的停止操作人和不超过 2000 字的原因。')
+        cancelled_by, reason = cancelled_by.strip(), reason.strip()
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            existing = db.execute('SELECT document FROM condition_tracking_cancellations '
+                                  'WHERE plan_id=?', (plan_id,)).fetchone()
+            if existing:
+                document = json.loads(existing[0])
+                if document['cancelled_by'] != cancelled_by or document['reason'] != reason:
+                    raise ValueError('计划已停止；不能覆盖原停止记录。')
+                return document
+            last = db.execute('SELECT event_id FROM condition_tracking_events '
+                              'WHERE plan_id=? ORDER BY rowid DESC LIMIT 1', (plan_id,)).fetchone()
+            document = {'plan_id': plan_id, 'cancelled_at': now(),
+                        'cancelled_by': cancelled_by, 'reason': reason,
+                        'last_event_id': last[0] if last else None}
+            db.execute('INSERT INTO condition_tracking_cancellations VALUES (?, ?)',
+                       (plan_id, _json(document)))
+        return document
 
     def evaluate(self, plan_id, check_id):
         plan = self.get(plan_id)
@@ -127,6 +159,9 @@ class ConditionTrackingRegistry:
                                   'WHERE plan_id=? AND check_id=?', (plan_id, check_id)).fetchone()
             if existing:
                 return json.loads(existing[0])
+            if db.execute('SELECT 1 FROM condition_tracking_cancellations WHERE plan_id=?',
+                          (plan_id,)).fetchone():
+                raise ValueError('计划已停止，不能提交新评估；历史记录仍可读取。')
             row = db.execute('SELECT document FROM condition_tracking_events '
                              'WHERE plan_id=? ORDER BY rowid DESC LIMIT 1', (plan_id,)).fetchone()
             previous = json.loads(row[0]) if row else None
@@ -151,9 +186,11 @@ class ConditionTrackingRegistry:
 
     def list(self):
         with self.store.connect() as db:
-            rows = db.execute('SELECT document FROM condition_tracking_plans '
-                              'ORDER BY rowid DESC').fetchall()
-        return [json.loads(row[0]) for row in rows]
+            rows = db.execute('SELECT p.document, c.document FROM condition_tracking_plans p '
+                              'LEFT JOIN condition_tracking_cancellations c USING (plan_id) '
+                              'ORDER BY p.rowid DESC').fetchall()
+        return [dict(json.loads(row[0]), **({'cancellation': json.loads(row[1])} if row[1] else {}))
+                for row in rows]
 
 
 def main(argv=None):
@@ -172,11 +209,14 @@ def main(argv=None):
     create.add_argument('--expires-at', required=True)
     create.add_argument('--created-by', required=True)
     sub.add_parser('list')
-    for action in ('get', 'history', 'evaluate'):
+    for action in ('get', 'history', 'evaluate', 'cancel'):
         command = sub.add_parser(action)
         command.add_argument('plan_id')
         if action == 'evaluate':
             command.add_argument('check_id')
+        if action == 'cancel':
+            command.add_argument('--cancelled-by', required=True)
+            command.add_argument('--reason', required=True)
     args = parser.parse_args(argv)
     try:
         if not (args.workspace / 'workspace.sqlite3').is_file():
@@ -190,6 +230,8 @@ def main(argv=None):
                                          args.required_consecutive, args.expires_at, args.created_by)
             elif args.action == 'evaluate':
                 result = registry.evaluate(args.plan_id, args.check_id)
+            elif args.action == 'cancel':
+                result = registry.cancel(args.plan_id, args.cancelled_by, args.reason)
             elif args.action == 'get':
                 result = registry.get(args.plan_id)
             elif args.action == 'list':

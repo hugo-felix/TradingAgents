@@ -3,6 +3,7 @@ import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
+from threading import Barrier
 
 import pytest
 
@@ -287,3 +288,118 @@ def test_cli_refuses_invalid_or_active_workspace(tmp_path, capsys, state):
             main(['--workspace', str(tmp_path), 'list'])
         assert exc.value.code == 1
         assert '操作失败' in capsys.readouterr().err
+
+
+def test_stop_preserves_plan_and_history_blocks_new_evaluations_and_survives_restore(tmp_path):
+    from tradingagents.desktop.backup import create_backup, restore_backup
+
+    workspace = tmp_path / 'workspace'
+    registry, plan, check = setup(workspace)
+    first = evaluate(registry, plan, check(2))
+    hit = evaluate(registry, plan, check(3))
+    assert hit['result']['hit']
+    candidate = check(4)
+    stopped = registry.cancel(plan['plan_id'], ' tester ', ' replaced by another rule ')
+    assert stopped['last_event_id'] == hit['event_id']
+    assert stopped['cancelled_by'] == 'tester'
+    assert stopped['reason'] == 'replaced by another rule'
+    assert registry.cancel(plan['plan_id'], 'tester', stopped['reason']) == stopped
+    with pytest.raises(ValueError, match='覆盖'):
+        registry.cancel(plan['plan_id'], 'other', stopped['reason'])
+    with pytest.raises(ValueError, match='停止'):
+        evaluate(registry, plan, candidate)
+    # Retrying an old hit returns its immutable evidence, never a new hit event.
+    assert evaluate(registry, plan, check(3)) == hit
+    assert registry.history(plan['plan_id']) == [hit, first]
+    expected = dict(plan, cancellation=stopped)
+    assert registry.get(plan['plan_id']) == expected
+    assert registry.list() == [expected]
+    assert registry.create(check(2)['check_id'], 'entry', 0, 2, plan['expires_at'], 'tester') == expected
+    with registry.store.connect() as db:
+        raw = db.execute('SELECT document FROM condition_tracking_plans').fetchone()[0]
+    assert json.loads(raw) == plan
+    archive = tmp_path / 'backup.zip'
+    create_backup(workspace, archive)
+    restored = tmp_path / 'restored'
+    restore_backup(archive, restored)
+    reopened = ConditionTrackingRegistry(DesktopStore(restored))
+    assert reopened.get(plan['plan_id']) == expected
+    assert reopened.history(plan['plan_id']) == [hit, first]
+    with pytest.raises(ValueError, match='停止'):
+        evaluate(reopened, plan, candidate)
+
+
+@pytest.mark.parametrize('actor,reason', [('', 'reason'), (' ', 'reason'),
+                         ('a' * 201, 'reason'), (None, 'reason'), ('tester', ''),
+                         ('tester', ' '), ('tester', 'a' * 2001), ('tester', None)])
+def test_stop_validation_has_no_partial_writes(tmp_path, actor, reason):
+    registry, plan, check = setup(tmp_path)
+    with pytest.raises(ValueError):
+        registry.cancel(plan['plan_id'], actor, reason)
+    assert registry.get(plan['plan_id']) == plan
+    assert evaluate(registry, plan, check(2))['result']['consecutive'] == 1
+
+
+def test_stop_before_first_check_bridge_and_cli(tmp_path, capsys):
+    registry, plan, check = setup(tmp_path)
+    api = DesktopAPI(registry.store)
+    try:
+        assert not api.cancel_condition_tracking('missing', 'tester', 'reason')['ok']
+        assert not api.cancel_condition_tracking(plan['plan_id'], '', 'reason')['ok']
+        main(['--workspace', str(tmp_path), 'cancel', plan['plan_id'],
+              '--cancelled-by', 'tester', '--reason', 'reason'])
+        stopped = json.loads(capsys.readouterr().out)
+        assert stopped['last_event_id'] is None
+        assert api.cancel_condition_tracking(plan['plan_id'], 'tester', 'reason')['data'] == stopped
+        assert api.get_condition_tracking(plan['plan_id'])['data']['cancellation'] == stopped
+        assert api.list_condition_tracking()['data'][0]['cancellation'] == stopped
+        assert not api.evaluate_condition_tracking(plan['plan_id'], check(2)['check_id'])['ok']
+        assert api.condition_tracking_history(plan['plan_id'])['data'] == []
+    finally:
+        api._tasks.close()
+
+
+def test_cancel_and_evaluate_serialize_without_late_writes(tmp_path):
+    registry, plan, check = setup(tmp_path)
+    evaluate(registry, plan, check(2))
+    candidate = check(3)
+    barrier = Barrier(8)
+
+    def attempt(_):
+        barrier.wait()
+        try:
+            return evaluate(registry, plan, candidate)
+        except ValueError as exc:
+            assert '停止' in str(exc)
+            return None
+
+    def stop():
+        barrier.wait()
+        return registry.cancel(plan['plan_id'], 'tester', 'reason')
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        pending = [pool.submit(attempt, n) for n in range(4)]
+        stops = [pool.submit(stop) for _ in range(4)]
+        results = [future.result() for future in pending]
+        cancellations = [future.result() for future in stops]
+    assert all(record == cancellations[0] for record in cancellations)
+    history = registry.history(plan['plan_id'])
+    assert cancellations[0]['last_event_id'] == history[0]['event_id']
+    assert len(history) == (2 if any(results) else 1)
+    assert all(result is None or result == history[0] for result in results)
+    with pytest.raises(ValueError, match='停止'):
+        evaluate(registry, plan, check(4))
+
+
+def test_failed_cancellation_rolls_back_and_allows_retry(tmp_path):
+    registry, plan, check = setup(tmp_path)
+    with registry.store.connect() as db:
+        db.execute('CREATE TRIGGER fail_cancel BEFORE INSERT ON condition_tracking_cancellations '
+                   "BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+    with pytest.raises(sqlite3.IntegrityError):
+        registry.cancel(plan['plan_id'], 'tester', 'reason')
+    assert registry.get(plan['plan_id']) == plan
+    first = evaluate(registry, plan, check(2))
+    with registry.store.connect() as db:
+        db.execute('DROP TRIGGER fail_cancel')
+    assert registry.cancel(plan['plan_id'], 'tester', 'reason')['last_event_id'] == first['event_id']
