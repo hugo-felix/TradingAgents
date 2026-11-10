@@ -47,9 +47,11 @@ PDF 位置是从 1 开始的**文件页序号**，印刷页为未知；EPUB 位�
 
 任务保存在 `book_text_jobs`；每个完整页或章节单独提交到 `book_checkpoint_headers/units`，不作为可检索版本。断点绑定书籍、原文 SHA-256 和解析器版本（PDF 包括 pypdf 版本），恢复时重新校验原文、连续位置、内容摘要及大小限制；校验失败不发布，可从头重建。尚未完成的当前页/章节会重新处理。只能继续该书最新的失败、取消或中断任务；重复继续同一活动任务返回同一标识，旧按钮不能替换更新任务。完整文本发布、任务成功及本次断点清理同事务提交；来源任务断点保留，但不能越过新任务继续旧断点。已有仅保留计数的旧任务不能续提取。尚无 OCR、语义索引或自动重试调度，K06 整项仍未完成。
 
-输入关键词后选择解析版本检索；所有以空格分隔的词均需在同一位置按大小写无关的字面匹配，中文词组需按原文输入。最多返回 50 个位置并报告完整匹配数。没有多语言语义召回、分词、重排、翻译或自动回答；零命中只表示当前文本关键词未匹配，不能推断原书没有答案。点击“查看完整位置与出处”读取确切版本，并重新核验原文快照状态。原文后来缺失或改变时，旧提取文本仍可追溯并显示当前缺口。
+输入关键词后选择解析版本检索；查询按文字、数字及下划线组成的连续词切分，各词均需在同一位置按大小写无关的字面匹配，中文词组默认需按原文输入。最多返回 50 个位置并报告完整匹配数。没有多语言语义召回、中文分词、重排、自动翻译或自动回答；零命中只表示当前文本关键词未匹配，不能推断原书没有答案。点击“查看完整位置与出处”读取确切版本，并重新核验原文快照状态。原文后来缺失或改变时，旧提取文本仍可追溯并显示当前缺口。
 
-服务为 `BookTextLibrary.parse(book_id)`、`history(book_id)`、`search(parse_id, query)`、`citation(parse_id, ordinal)`；桌面任务桥接为 `start_book_text(book_id)`、`resume_book_text(job_id)`、`book_text_status(book_id)`、`cancel_book_text(job_id)`，查询桥接为 `book_text_history`、`search_book_text`、`book_text_citation`。兼容接口 `parse_book_text` 仍同步执行，不提供任务取消。原文件上限 256 MiB、章节 XML 单体 8 MiB、提取文本合计 32 MiB、位置 10000；超限拒绝发布。EPUB 不解压到文件系统，不访问远端章节，拒绝实体声明和越界章节路径。真实中文扫描、英文、跨页图表与复杂 EPUB 的质量评测仍待书籍和验收题集。
+可选填写本次查询的术语别名，例如 `成交量 = volume`、`均线 = moving average`，每行一个配对；同一个关键词可以重复多行提供不同原文词。每个查询词匹配自身或其任一别名，不同查询词仍须在同一页/章节全部匹配。查询词按 Unicode 文字/数字/下划线切分；别名可以是短语，按连续字面匹配。只单向扩展明确提供的别名，不递归扩展或推断翻译。返回 `term_groups` 和逐位置的 `matched_terms`，页面展示命中词；原术语、别名和原文分别保留，不修改文本版本或出处。别名输入仅在当前窗口草稿中保留，不存入书籍或生成共享词典；关闭后需重新填写。每次最多 32 个术语，每项 1–8 个别名，单词/短语最多 100 字。此功能是 K09 的人工别名基础，不代表多语言语义检索已完成。
+
+服务为 `BookTextLibrary.parse(book_id)`、`history(book_id)`、`search(parse_id, query, aliases=None)`、`citation(parse_id, ordinal)`；`aliases` 为术语到别名列表的映射，例如 `{"成交量": ["volume", "turnover"]}`，省略仍按原文检索。桌面任务桥接为 `start_book_text(book_id)`、`resume_book_text(job_id)`、`book_text_status(book_id)`、`cancel_book_text(job_id)`，查询桥接为 `book_text_history`、`search_book_text(parse_id, query, aliases=None)`、`book_text_citation`。兼容接口 `parse_book_text` 仍同步执行，不提供任务取消。原文件上限 256 MiB、章节 XML 单体 8 MiB、提取文本合计 32 MiB、位置 10000；超限拒绝发布。EPUB 不解压到文件系统，不访问远端章节，拒绝实体声明和越界章节路径。真实中文扫描、英文、跨页图表与复杂 EPUB 的质量评测仍待书籍和验收题集。
 
 ## 策略管理
 

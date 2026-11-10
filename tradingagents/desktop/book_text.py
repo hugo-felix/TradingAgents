@@ -204,22 +204,51 @@ class BookTextLibrary:
             'unit': document['units'][ordinal - 1],
             'original_status': self.books.verify(document['book_id'])['original_status']}
 
-    def search(self, parse_id, query):
+    def search(self, parse_id, query, aliases=None):
         if not isinstance(query, str) or not query.strip() or len(query) > 200:
             raise ValueError('请输入 1–200 字的原文关键词。')
-        terms = set(re.findall(r'\w+', query.casefold()))
+        terms = sorted(set(re.findall(r'\w+', query.casefold())))
         if not terms:
             raise ValueError('请输入文字或数字关键词。')
+        if aliases is None:
+            aliases = {}
+        if not isinstance(aliases, dict) or len(aliases) > 32:
+            raise ValueError('术语别名须为最多 32 项的映射。')
+        normalized = {}
+        for key, values in aliases.items():
+            if (not isinstance(key, str) or len(key) > 100
+                    or not re.fullmatch(r'\w+', key)
+                    or key.casefold() in normalized
+                    or not isinstance(values, list) or not 1 <= len(values) <= 8):
+                raise ValueError('每个术语须为单个关键词，提供 1–8 个别名且不能重复。')
+            if any(not isinstance(value, str) or not value.strip() or len(value) > 100
+                   or not re.search(r'\w', value) for value in values):
+                raise ValueError('别名须为 1–100 字的文字或短语。')
+            normalized[key.casefold()] = sorted({value.strip().casefold() for value in values})
+        groups = {term: sorted({term, *normalized.get(term, [])}) for term in terms}
         document = self.get(parse_id)
         matches = []
         for unit in document['units']:
             folded = unit['text'].casefold()
-            if all(term in folded for term in terms):
-                position = min(folded.index(term) for term in terms)
+            matched = {term: [word for word in words if word in folded]
+                       for term, words in groups.items()}
+            if all(matched.values()):
+                position = min(folded.index(word) for words in matched.values() for word in words)
+                # Case folding may expand characters (e.g. ß -> ss). Map the hit
+                # back to the original text before slicing the unmodified excerpt.
+                offset = 0
+                for index, character in enumerate(unit['text']):
+                    offset += len(character.casefold())
+                    if offset > position:
+                        position = index
+                        break
                 # Full original text remains available through citation(), without an LLM.
                 matches.append({'parse_id': parse_id, 'ordinal': unit['ordinal'],
                                 'kind': unit['kind'],
+                                'matched_terms': matched,
                                 'excerpt': unit['text'][max(0, position - 80):position + 240]})
-        return {'mode': 'literal_all_terms', 'query': query.strip(), 'parse_id': parse_id,
+        return {'mode': 'explicit_aliases' if aliases else 'literal_all_terms',
+                'query': query.strip(), 'parse_id': parse_id, 'term_groups': groups,
                 'total': len(matches), 'matches': matches[:50],
-                'limitations': '仅检索指定解析版本的原文关键词；无语义召回、翻译或答案推断。'}
+                'limitations': '仅检索指定解析版本；别名由用户提供，按字面匹配，不证明翻译等价。'
+                               '无语义召回、自动翻译或答案推断。'}

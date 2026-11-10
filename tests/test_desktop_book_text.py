@@ -190,3 +190,63 @@ def test_concurrent_identical_parses_and_api(tmp_path, setup):
     assert api.search_book_text(parsed['parse_id'], 'volume')['data']['total'] == 1
     assert api.book_text_citation(parsed['parse_id'], 1)['data']['unit']['ordinal'] == 1
     assert not api.book_text_citation('missing', 1)['ok']
+
+
+def test_explicit_aliases_preserve_original_and_all_query_terms(tmp_path, setup):
+    store, register, library = setup
+    parsed = library.parse(register(epub(
+        tmp_path / 'aliases.epub', text='Trading VOLUME and moving average.'))['book_id'])
+    identifier = parsed['parse_id']
+    aliases = {'成交量': ['volume', 'turnover'], '均线': ['moving average']}
+    assert library.search(identifier, '成交量')['total'] == 0
+    result = library.search(identifier, '成交量 均线', aliases)
+    assert result['mode'] == 'explicit_aliases'
+    assert result['total'] == 1
+    assert result['matches'][0]['matched_terms'] == {
+        '成交量': ['volume'], '均线': ['moving average']}
+    assert result['term_groups']['成交量'] == ['turnover', 'volume', '成交量']
+    assert library.search(identifier, '成交量 缺失', aliases)['total'] == 0
+    # Expansion is one-way and never replaces original text or creates a parse version.
+    assert library.search(identifier, '换手率', aliases)['total'] == 0
+    assert library.get(identifier) == parsed
+    assert len(library.history(parsed['book_id'])) == 1
+    api = DesktopAPI(store)
+    assert api.search_book_text(identifier, '成交量', aliases)['data']['total'] == 1
+    assert not api.search_book_text(identifier, '成交量', {'成交量': 'volume'})['ok']
+
+
+def test_aliases_are_literal_local_and_not_recursively_expanded(tmp_path, setup):
+    _, register, library = setup
+    parsed = library.parse(register(epub(
+        tmp_path / 'aliases.epub', text='风险 trend a.b'))['book_id'])
+    identifier = parsed['parse_id']
+    assert library.search(identifier, '风险', {'风险': ['risk']})['total'] == 1
+    result = library.search(identifier, '趋势', {'趋势': ['TREND', 'trend', ' trend ']})
+    assert result['matches'][0]['matched_terms'] == {'趋势': ['trend']}
+    assert library.search(identifier, '甲', {'甲': ['乙'], '乙': ['trend']})['total'] == 0
+    assert library.search(identifier, '点', {'点': ['a.b']})['total'] == 1
+    assert library.search(identifier, '点', {'点': ['a.*b']})['total'] == 0
+    assert library.search(identifier, '趋势')['total'] == 0
+
+
+def test_unicode_case_folding_preserves_excerpt_location(tmp_path, setup):
+    _, register, library = setup
+    text = 'ß' * 150 + ' VOLUME'
+    parsed = library.parse(register(epub(tmp_path / 'unicode.epub', text=text))['book_id'])
+    for query, aliases in [('volume', None), ('成交量', {'成交量': ['volume']})]:
+        result = library.search(parsed['parse_id'], query, aliases)
+        assert result['total'] == 1
+        assert result['matches'][0]['excerpt'] == text[71:]
+
+
+@pytest.mark.parametrize('aliases', [
+    [], 'volume', {'': ['volume']}, {'two words': ['volume']},
+    {'词': []}, {'词': ['v'] * 9}, {'词': 'volume'}, {'词': [None]},
+    {'词': [' ']}, {'词': ['!!!']}, {'词': ['v' * 101]},
+    {'A': ['a'], 'a': ['b']}, {str(i): ['word'] for i in range(33)},
+])
+def test_invalid_aliases_are_rejected(tmp_path, setup, aliases):
+    _, register, library = setup
+    parsed = library.parse(register(epub(tmp_path / 'test.epub'))['book_id'])
+    with pytest.raises(ValueError):
+        library.search(parsed['parse_id'], 'volume', aliases)

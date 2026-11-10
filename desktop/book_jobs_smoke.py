@@ -88,6 +88,30 @@ def main():
         assert api._book_jobs.status(book)['status'] == 'completed'
         assert api._book_jobs.status(book)['resumed_from'] == first
         assert len(api._book_jobs.library.history(book)) == 1
+        record.locator('[data-book-query]').fill('离线')
+        record.locator('[data-action="book-search"]').click()
+        page.wait_for_function("document.querySelector('[data-book-id] [role=status]')"
+                               "?.textContent.includes('0 个位置') || "
+                               "document.querySelector('[data-book-id]').textContent"
+                               ".includes('共 0 个位置')")
+        record.locator('[data-book-aliases]').fill('离线 = Offline')
+        record.locator('[data-action="book-search"]').click()
+        page.wait_for_function("document.querySelector('[data-book-id]').textContent"
+                               ".includes('离线 → offline')")
+        record.locator('details').filter(has=page.locator('[data-action="book-citation"]')) \
+            .locator('summary').click()
+        record.locator('[data-action="book-citation"]').click()
+        assert record.locator('.book-citation pre').inner_text() == 'Offline synthetic text'
+        # Inputs survive renders; malformed aliases can be corrected without losing the query.
+        record.locator('[data-book-aliases]').fill('invalid alias')
+        record.locator('[data-action="book-search"]').click()
+        record.locator('[role="alert"]').wait_for()
+        assert record.locator('[data-book-query]').input_value() == '离线'
+        record.locator('[data-book-aliases]').fill('离线 = <script>Offline</script>')
+        record.locator('[data-action="book-search"]').click()
+        page.wait_for_function("document.querySelector('[data-book-id]').textContent"
+                               ".includes('共 0 个位置')")
+        assert record.locator('script').count() == 0
         source_snapshot = store.directory / 'books' / 'originals'
         next(source_snapshot.iterdir()).unlink()
         record.locator('[data-action="book-parse"]:enabled').click()
@@ -95,7 +119,7 @@ def main():
         assert api._book_jobs.status(book)['status'] == 'failed'
         assert len(api._book_jobs.library.history(book)) == 1
         assert not errors, errors
-        print('Book extraction cancellation, reload, checkpoint resume and failure acceptance passed')
+        print('Book extraction, checkpoint resume, explicit aliases and failure acceptance passed')
 
 
 if __name__ == '__main__':

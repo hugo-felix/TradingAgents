@@ -209,9 +209,9 @@ class DesktopAPI:
         return self._book_jobs.cancel(job_id)
 
     @response
-    def search_book_text(self, parse_id, query):
+    def search_book_text(self, parse_id, query, aliases=None):
         from tradingagents.desktop.book_text import BookTextLibrary
-        return BookTextLibrary(self._store).search(parse_id, query)
+        return BookTextLibrary(self._store).search(parse_id, query, aliases)
 
     @response
     def book_text_citation(self, parse_id, ordinal):
