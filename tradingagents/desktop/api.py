@@ -339,6 +339,21 @@ class DesktopAPI:
             broker, account_ref, kind, limit=limit, offset=offset)
 
     @response
+    def record_account_reconciliation(self, statement, request_id, recorded_by):
+        from tradingagents.desktop.account_reconciliation import AccountReconciliation
+        return AccountReconciliation(self._store).record(statement, request_id, recorded_by)
+
+    @response
+    def get_account_reconciliation(self, request_id):
+        from tradingagents.desktop.account_reconciliation import AccountReconciliation
+        return AccountReconciliation(self._store).get(request_id)
+
+    @response
+    def list_account_reconciliations(self, limit=100, offset=0):
+        from tradingagents.desktop.account_reconciliation import AccountReconciliation
+        return AccountReconciliation(self._store).list(limit=limit, offset=offset)
+
+    @response
     def record_trade_review(self, trade_id, notes, request_id):
         from tradingagents.desktop.reviews import ReviewRegistry
         return ReviewRegistry(self._store).record(trade_id, notes, request_id)
