@@ -293,6 +293,33 @@ class DesktopAPI:
         return StrategyComparisonRegistry(self._store).history(check_id)
 
     @response
+    def create_condition_tracking(self, check_id, group, index, required_consecutive,
+                                  expires_at, created_by):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).create(
+            check_id, group, index, required_consecutive, expires_at, created_by)
+
+    @response
+    def get_condition_tracking(self, plan_id):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).get(plan_id)
+
+    @response
+    def list_condition_tracking(self):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).list()
+
+    @response
+    def evaluate_condition_tracking(self, plan_id, check_id):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).evaluate(plan_id, check_id)
+
+    @response
+    def condition_tracking_history(self, plan_id):
+        from tradingagents.desktop.condition_tracking import ConditionTrackingRegistry
+        return ConditionTrackingRegistry(self._store).history(plan_id)
+
+    @response
     def assess_strategy_timing(self, check_id, evidence):
         from tradingagents.desktop.strategy_timing import StrategyTimingRegistry
         return StrategyTimingRegistry(self._store).assess(check_id, evidence)
