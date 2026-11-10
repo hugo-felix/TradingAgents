@@ -103,6 +103,38 @@ def test_incompatible_currency_periods_are_not_relabelled():
     with pytest.raises(VendorUnavailableError, match='incompatible units'):
         sec_edgar._as_of(facts, ('Assets',), '2025-03-01', ((300, 400),))
 
+
+def test_archived_evidence_survives_cache_refresh(monkeypatch, tmp_path):
+    from copy import deepcopy
+
+    before = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30')
+    digest = before.facts[0].provenance.snapshot_sha256
+    changed = deepcopy(FACTS)
+    changed['facts']['us-gaap']['Assets']['units']['USD'][0]['val'] = 999
+    (tmp_path / 'sec_edgar' / 'CIK0000320193.json').unlink()
+    monkeypatch.setattr(sec_edgar, '_fetch_json', lambda url: changed)
+    after = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30')
+    assert after.facts[0].value == Decimal('999')
+    assert after.facts[0].provenance.snapshot_sha256 != digest
+    monkeypatch.setattr(sec_edgar, '_fetch_json', lambda url: pytest.fail('unexpected request'))
+    assert sec_edgar.load_companyfacts_snapshot(digest) == FACTS
+    assert sec_edgar.load_companyfacts_snapshot(after.facts[0].provenance.snapshot_sha256) == changed
+
+
+def test_archived_snapshot_damage_is_not_hidden_by_live_refetch(tmp_path):
+    from tradingagents.dataflows.errors import VendorUnavailableError
+    from tradingagents.dataflows.snapshots import SnapshotIntegrityError
+
+    result = sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30')
+    digest = result.facts[0].provenance.snapshot_sha256
+    archive = tmp_path / 'sec_edgar' / 'snapshots' / f'{digest}.json'
+    archive.write_bytes(b'damaged')
+    with pytest.raises(SnapshotIntegrityError):
+        sec_edgar.load_companyfacts_snapshot(digest)
+    with pytest.raises(VendorUnavailableError, match='snapshot could not be preserved'):
+        sec_edgar.get_balance_sheet_result('AAPL', 'annual', '2009-06-30')
+    assert archive.read_bytes() == b'damaged'
+
 TICKER_MAP = {"0": {"cik_str": 320193, "ticker": "AAPL", "title": "Apple Inc."}}
 
 

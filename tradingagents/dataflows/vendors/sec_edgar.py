@@ -17,7 +17,6 @@ EDGAR's ticker map falls through to the next configured vendor.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import math
@@ -34,6 +33,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.facts import Fact, FactProvenance, SourceResult
 from tradingagents.dataflows.files import replace_file
+from tradingagents.dataflows.snapshots import load_json_snapshot, save_json_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -220,6 +220,15 @@ def _selected_as_of(facts: dict, tags: tuple[str, ...], as_of_date: str,
     return dict(sorted(values.items())), chosen_unit
 
 
+def _snapshot_directory() -> Path:
+    return Path(get_config()['data_cache_dir']) / 'sec_edgar' / 'snapshots'
+
+
+def load_companyfacts_snapshot(snapshot_sha256: str) -> dict:
+    """Verify and read archived companyfacts by fingerprint, without a vendor request."""
+    return load_json_snapshot(_snapshot_directory(), snapshot_sha256)
+
+
 def _statement_result(kind: str, ticker: str, freq: str, as_of_date: str, title: str) -> SourceResult:
     as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
     cik = cik_for(ticker)
@@ -228,9 +237,10 @@ def _statement_result(kind: str, ticker: str, freq: str, as_of_date: str, title:
 
     url = _FACTS_URL.format(cik=cik)
     facts, fetched_at = _cached_snapshot(url, f"CIK{cik}.json")
-    snapshot_hash = hashlib.sha256(json.dumps(
-        facts, sort_keys=True, separators=(',', ':'), ensure_ascii=False,
-        allow_nan=False).encode('utf-8')).hexdigest()
+    try:
+        snapshot_hash = save_json_snapshot(_snapshot_directory(), facts)
+    except (OSError, ValueError) as exc:
+        raise VendorUnavailableError('SEC EDGAR evidence snapshot could not be preserved') from exc
     us_gaap = (facts.get("facts") or {}).get("us-gaap")
     if not us_gaap:
         raise NoMarketDataError(ticker, ticker, "US filer with no us-gaap facts")

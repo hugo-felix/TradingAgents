@@ -48,7 +48,7 @@
 | --- | --- | --- |
 | [Yahoo OHLCV](../tradingagents/dataflows/vendors/yahoo/ohlcv.py) | 按证券缓存 CSV，原子替换，不缓存空结果；当天文件可复用，当前日期请求缓存有效期 900 秒；共享指标路径下载从现在起向前五年的调整行情 | 请求历史区间不保证可从该缓存取到；不是不可变数据集或原始报价档案。剔除未完成日线，最新行陈旧超过 10 个自然日拒绝；该阈值不能替代交易所停牌/节假日数据库 |
 | Yahoo 指标与核验快照 | 通用 OHLCV 默认仅按交易日顺序向后沿用已知价格；开头的价格缺口、所有缺失成交量均保留，不从未来行回填；核验快照显式 `fill_gaps=False` | 沿用价格不能当作当日实际报价，自动调整历史仍是供应商当前修订，不能直接作为真实成交价格；没有完整公司行动账本。直接日线请求和共享指标缓存不是同一获取路径 |
-| [SEC](../tradingagents/dataflows/vendors/sec_edgar.py) | ticker 映射和 companyfacts 缓存 24 小时；按 `filed <= as_of_date` 选择已披露版本 | 保留期间、单位与所选披露信息；当前 ticker 映射不是历史股票池。缓存不是完整逐次获取档案 |
+| [SEC](../tradingagents/dataflows/vendors/sec_edgar.py) | ticker 映射和 companyfacts 缓存 24 小时；按 `filed <= as_of_date` 选择已披露版本 | 保留期间、单位与所选披露信息；参与财报查询的 companyfacts 按内容指纹另行归档。当前 ticker 映射不是历史股票池，也不保留完整逐次获取档案 |
 | FRED | 请求 observation 窗口及 as-of vintage，按芝加哥日期约束可请求的今天 | 观测日期和首次公开日期不同；vintage 查询不可替换成简单截断最新系列。仍无统一数据集身份或离线不可变快照 |
 | AKShare 财务、宏观、分红、估值 | 缺完整修订档案，历史日期返回 withheld；今日请求保留来源、期间与具体限制 | 不得因表中有历史期间就绕过 withheld 用于历史回测；新闻是近期搜索样本，日期过滤也不能构成完整历史档案 |
 | [CNInfo PDF](../tradingagents/dataflows/vendors/cninfo.py) | 公告按公开日过滤；URL 哈希的文本缓存；下载不跟随重定向；最多 20 MiB、200 页、30 万字符 | 缓存及公开日不是独立修订档案；截断明确标记，扫描页无 OCR，不能把提取失败当成没有披露 |
