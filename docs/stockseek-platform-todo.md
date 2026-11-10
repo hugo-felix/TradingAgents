@@ -49,7 +49,14 @@
 | D07 备份与恢复基础 | Codex / 当前 Windows 工作区 | main（本地，第十一批） | `backup.py`、独立 CLI 与恢复中断启动拦截；Windows 临时工作空间回归通过，版本迁移与跨平台尚未完成 |
 | R01；R02 真实成交隔离部分 | Codex / 当前 Windows 工作区 | main（本地，第十二批） | `trades.py`、离线 CLI、桌面桥接与 `tests/test_desktop_trades.py`；标准 CSV 预览、幂等导入和原始批次审计，不更新手工持仓；计划/模拟台账尚未实现 |
 | R04 成交依据版本 | Codex / 当前 Windows 工作区 | main（第十三批） | `trade_contexts.py`、成交 CLI/桌面 API 与独立回归；报告原文、明确策略版本及个人理由追加保存，支持无关联历史成交 |
-| R02 计划与模拟隔离 | Codex / 当前 Windows 工作区 | main（第十四批，实施中） | 独立非真实操作台账；不生成实际成交或变更持仓，不调用模型或券商 |
+| R02 计划与模拟隔离 | Codex / 当前 Windows 工作区 | main（第十四批） | `operations.py`、CLI/桌面 API 与 `tests/test_desktop_operations.py`；独立非真实操作台账，不生成实际成交或变更持仓 |
+
+### 2026-11-10 第十四批实施说明
+
+- R02 新增独立的计划/模拟记录服务、离线 CLI、桌面 API 和查询分页；严格区分字段，计划保留意图与可选限价，模拟保留必填假设、价格及未知/明确为零的费用。来源、当前登记时间和规范化指纹一并保存。
+- 类型不可转换，记录只追加；同类型请求标识幂等、内容冲突拒绝覆盖，包含并发约束。真实成交、持仓和研究不改写；三类入口和查询隔离。不执行模型或券商调用，没有自动撮合、计划状态流转、管理页面或收益计算。使用与限制见 `docs/operations.md`。
+
+- 验证：操作、成交及关联定向回归 88 项通过；Windows 默认套件 2478 passed、7 skipped、1 deselected、100 subtests passed。涉及 Python 文件 Ruff 与差异检查通过；未执行 integration、界面、打包或其他平台验收。
 
 ### 2026-11-10 第十三批实施说明
 
@@ -274,7 +281,7 @@
 ## 第三里程碑：真实记录与决策复盘（P1/P2）
 
 - [x] R01 导入实际成交，保存券商标识、成交时间、价格、数量、费用及导入来源；建立幂等和重复检测。证据：`trades.py`、`tests/test_desktop_trades.py` 和 `docs/trade-import.md`；范围为标准 CSV 的离线 CLI/桌面 API，数据为调用者声明，未与券商核验。
-- [ ] R02 区分计划、模拟成交与真实成交；模型不能反向改写已发生操作。
+- [x] R02 区分计划、模拟成交与真实成交；模型不能反向改写已发生操作。证据：`operations.py`、`trades.py`、`tests/test_desktop_operations.py`、`docs/operations.md`；固定类型的独立追加台账，支持 CLI/API，无自动撮合或计划生命周期界面。
 - [ ] R03 补现金、分红和公司行动记录后再提供完整收益；数据不全时限制账户绩效结论。
 - [x] R04 将操作关联当时报告、策略版本与个人理由；支持无法关联的历史记录。证据：`trade_contexts.py`、`tests/test_desktop_trade_contexts.py`、`docs/trade-import.md`；范围为实际成交的离线 CLI/API，关联追加保留，不证明历史已知或交易因果，无管理页面。
 - [ ] R05 分别评估研究方向、策略规则与个人执行；单次卖后上涨不直接认定决策错误。

@@ -296,6 +296,21 @@ class DesktopAPI:
         from tradingagents.desktop.trade_contexts import TradeContextRegistry
         return TradeContextRegistry(self._store).history(trade_id, limit=limit, offset=offset)
 
+    @response
+    def record_operation(self, kind, payload, request_id):
+        from tradingagents.desktop.operations import OperationLedger
+        return OperationLedger(self._store).record(kind, payload, request_id)
+
+    @response
+    def get_operation(self, operation_id):
+        from tradingagents.desktop.operations import OperationLedger
+        return OperationLedger(self._store).get(operation_id)
+
+    @response
+    def list_operations(self, kind=None, ticker=None, limit=100, offset=0):
+        from tradingagents.desktop.operations import OperationLedger
+        return OperationLedger(self._store).list(kind, ticker, limit=limit, offset=offset)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library
