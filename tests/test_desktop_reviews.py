@@ -1,3 +1,4 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -127,3 +128,96 @@ def test_api_restart_and_backup_preserve_review_and_draft(tmp_path):
     restored = ReviewRegistry(DesktopStore(destination))
     assert restored.get(review['review_id']) == review
     assert restored.strategies.get(draft['strategy_id']) == draft
+
+
+def test_review_queries_filter_and_page_in_append_order(tmp_path):
+    from tradingagents.desktop.api import DesktopAPI
+
+    store, trade_id = setup(tmp_path)
+    ledger = TradeLedger(store)
+    ingest(ledger, document(fill(execution_id='other')))
+    other = next(row['trade_id'] for row in ledger.list_fills()['items']
+                 if row['trade_id'] != trade_id)
+    registry = ReviewRegistry(store)
+    first = registry.record(trade_id, notes(), 'first')
+    registry.record(other, notes(), 'other')
+    last = registry.record(trade_id, notes(), 'last')
+    assert registry.list(trade_id, limit=1) == {'total': 2, 'items': [last]}
+    assert registry.list(trade_id, limit=1, offset=1) == {'total': 2, 'items': [first]}
+    assert registry.list(offset=3) == {'total': 3, 'items': []}
+    assert registry.list('unknown') == {'total': 0, 'items': []}
+    api = DesktopAPI(store)
+    assert api.list_trade_reviews(trade_id, 1, 1)['data']['items'] == [first]
+    for kwargs in ({'limit': True}, {'limit': 1001}, {'offset': -1}, {'trade_id': []}):
+        with pytest.raises(ValueError):
+            registry.list(**kwargs)
+    assert not api.list_trade_reviews(limit=0)['ok']
+
+
+def test_concurrent_review_records_do_not_duplicate_or_overwrite(tmp_path):
+    store, trade_id = setup(tmp_path)
+    registry = ReviewRegistry(store)
+
+    def record(research):
+        try:
+            return registry.record(trade_id, notes(research=research), 'concurrent')
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(record, ['first opinion', 'different opinion']))
+    assert sum(row is not None for row in results) == 1
+    original = registry.list()['items'][0]
+    assert registry.list()['total'] == 1
+    assert original in results
+    with ThreadPoolExecutor(2) as pool:
+        retries = list(pool.map(lambda _: registry.record(trade_id, original['notes'], 'concurrent'),
+                                range(2)))
+    assert retries == [original, original]
+
+
+def test_review_cli_record_find_and_create_draft(tmp_path, capsys):
+    from tradingagents.desktop.reviews import main
+
+    store, trade_id = setup(tmp_path / 'workspace')
+    prefix = ['--workspace', str(store.directory)]
+    source = tmp_path / 'input.json'
+    source.write_text(json.dumps(notes()), encoding='utf-8-sig')
+    main([*prefix, 'record', trade_id, str(source), '--request-id', 'cli'])
+    review = json.loads(capsys.readouterr().out)
+    main([*prefix, 'get', review['review_id']])
+    assert json.loads(capsys.readouterr().out) == review
+    main([*prefix, 'list', '--trade-id', trade_id, '--limit', '1'])
+    assert json.loads(capsys.readouterr().out) == {'total': 1, 'items': [review]}
+    source.write_text(json.dumps(complete_definition()), encoding='utf-8')
+    main([*prefix, 'draft', review['review_id'], str(source)])
+    draft = json.loads(capsys.readouterr().out)
+    assert draft['status'] == 'draft'
+    assert draft['definition']['review_origin']['snapshot'] == review
+    with pytest.raises(SystemExit) as caught:
+        main([*prefix, 'draft', review['review_id'], str(source)])
+    assert caught.value.code == 1
+    for content in (b'{', b'\xff', b'0' * 65537):
+        source.write_bytes(content)
+        with pytest.raises(SystemExit) as caught:
+            main([*prefix, 'record', trade_id, str(source), '--request-id', 'bad'])
+        assert caught.value.code == 1
+    assert ReviewRegistry(store).list()['total'] == 1
+
+
+def test_review_cli_refuses_unknown_running_and_incomplete_workspace(tmp_path):
+    from tradingagents.desktop.backup import INCOMPLETE
+    from tradingagents.desktop.instance import WorkspaceLock
+    from tradingagents.desktop.reviews import main
+
+    workspace = tmp_path / 'workspace'
+    args = ['--workspace', str(workspace), 'list']
+    with pytest.raises(SystemExit):
+        main(args)
+    assert not workspace.exists()
+    DesktopStore(workspace)
+    with WorkspaceLock(workspace), pytest.raises(SystemExit):
+        main(args)
+    (workspace / INCOMPLETE).touch()
+    with pytest.raises(SystemExit):
+        main(args)

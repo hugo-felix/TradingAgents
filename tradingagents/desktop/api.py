@@ -322,6 +322,11 @@ class DesktopAPI:
         return ReviewRegistry(self._store).get(review_id)
 
     @response
+    def list_trade_reviews(self, trade_id=None, limit=100, offset=0):
+        from tradingagents.desktop.reviews import ReviewRegistry
+        return ReviewRegistry(self._store).list(trade_id, limit=limit, offset=offset)
+
+    @response
     def create_review_strategy(self, review_id, definition):
         from tradingagents.desktop.reviews import ReviewRegistry
         return ReviewRegistry(self._store).create_draft(review_id, definition)

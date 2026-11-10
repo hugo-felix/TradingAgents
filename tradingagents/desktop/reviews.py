@@ -1,6 +1,9 @@
 """Caller-authored reviews and prospective personal rule drafts, without model inference."""
 
+import argparse
 import json
+import sqlite3
+from pathlib import Path
 from uuid import uuid4
 
 from tradingagents.desktop.store import now
@@ -64,6 +67,22 @@ class ReviewRegistry:
             raise ValueError('未找到个人复盘。')
         return json.loads(row[0])
 
+    def list(self, trade_id=None, *, limit=100, offset=0):
+        if (type(limit) is not int or not 1 <= limit <= 1000
+                or type(offset) is not int or offset < 0):
+            raise ValueError('复盘分页参数无效。')
+        if trade_id is not None:
+            trade_id = _text(trade_id, 'trade_id')
+        where = 'WHERE (? IS NULL OR json_extract(document, \'$.trade_id\')=?)'
+        with self.store.connect() as db:
+            db.execute('BEGIN')
+            total = db.execute('SELECT COUNT(*) FROM personal_trade_reviews ' + where,
+                               (trade_id, trade_id)).fetchone()[0]
+            rows = db.execute('SELECT document FROM personal_trade_reviews ' + where
+                              + ' ORDER BY rowid DESC LIMIT ? OFFSET ?',
+                              (trade_id, trade_id, limit, offset)).fetchall()
+        return {'total': total, 'items': [json.loads(row[0]) for row in rows]}
+
     def create_draft(self, review_id, definition):
         review = self.get(review_id)
         definition = validate_definition(definition)
@@ -80,3 +99,54 @@ class ReviewRegistry:
         # One initial draft per review; duplicates and concurrent writers fail closed.
         # Later edits and confirmation use the existing append-only strategy workflow.
         return self.strategies.save(definition, strategy_id='review-' + review['review_id'])
+
+
+def main(argv=None):
+    from tradingagents.desktop.backup import INCOMPLETE
+    from tradingagents.desktop.instance import WorkspaceLock
+    from tradingagents.desktop.store import DesktopStore
+
+    parser = argparse.ArgumentParser(description='StockSeek 离线个人复盘与待确认规则草案')
+    parser.add_argument('--workspace', type=Path, required=True)
+    sub = parser.add_subparsers(dest='action', required=True)
+    record = sub.add_parser('record')
+    record.add_argument('trade_id')
+    record.add_argument('json', type=Path)
+    record.add_argument('--request-id', required=True)
+    get = sub.add_parser('get')
+    get.add_argument('review_id')
+    listing = sub.add_parser('list')
+    listing.add_argument('--trade-id')
+    listing.add_argument('--limit', type=int, default=100)
+    listing.add_argument('--offset', type=int, default=0)
+    draft = sub.add_parser('draft')
+    draft.add_argument('review_id')
+    draft.add_argument('json', type=Path)
+    args = parser.parse_args(argv)
+    try:
+        if not (args.workspace / 'workspace.sqlite3').is_file():
+            raise ValueError('工作空间数据库不存在，不会创建新工作空间。')
+        if (args.workspace / INCOMPLETE).exists():
+            raise ValueError('不能打开未完整恢复的工作空间。')
+        with WorkspaceLock(args.workspace):
+            registry = ReviewRegistry(DesktopStore(args.workspace))
+            if args.action in ('record', 'draft'):
+                with args.json.open('rb') as source:
+                    content = source.read(65537)
+                if len(content) > 65536:
+                    raise ValueError('复盘或规则 JSON 不得超过 64 KiB。')
+                payload = json.loads(content.decode('utf-8-sig'))
+                result = (registry.record(args.trade_id, payload, args.request_id)
+                          if args.action == 'record'
+                          else registry.create_draft(args.review_id, payload))
+            elif args.action == 'get':
+                result = registry.get(args.review_id)
+            else:
+                result = registry.list(args.trade_id, limit=args.limit, offset=args.offset)
+    except (OSError, ValueError, OverflowError, sqlite3.Error) as exc:
+        parser.exit(1, f'复盘操作失败：{exc}\n')
+    print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()
