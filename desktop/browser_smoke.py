@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
     )
     api._tasks = TaskManager(store, lambda _: [sys.executable, '-c', progress_script])
     cleanup.callback(api._tasks.close)
+    cleanup.callback(api._book_jobs.close)
     methods = [name for name in dir(api) if not name.startswith('_') and callable(getattr(api, name))]
     browser = playwright.chromium.launch(executable_path=options.chromium_path)
     cleanup.callback(browser.close)
@@ -495,7 +496,7 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
         page.wait_for_selector('.book-record')
         assert page.locator('.book-record h3').inner_text() == metadata['title']
         assert page.locator('.book-record script').count() == 0
-        assert '解析未开始 · 索引未开始' in page.locator('.book-record').inner_text()
+        assert '尚无已发布文本 · 语义索引未建立' in page.locator('.book-record').inner_text()
         book_form.locator('[type="submit"]').click()
         page.wait_for_selector('#toast:has-text("此文件已登记")')
         assert page.locator('.book-record').count() == 1
@@ -582,7 +583,7 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
         record.locator('[role="status"]:has-text("共 0 个位置")').wait_for()
         (store.directory / 'books' / 'originals' / text_book['sha256']).unlink()
         record.locator('[data-action="book-parse"]').click()
-        record.locator('[role="alert"]:has-text("指纹")').wait_for()
+        record.locator('[role="alert"]:has-text("本地解析失败")').wait_for()
         assert record.locator('[data-book-parse] option').count() == 1
         api._window = None
     # Strategy definitions are synthetic and never execute market/model requests.

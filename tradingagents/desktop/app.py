@@ -69,6 +69,7 @@ def main(argv=None):
     api._dividends.start_auto_update()
     window.events.closed += api._tasks.close
     window.events.closed += api._dividends.close
+    window.events.closed += api._book_jobs.close
     window.events.closed += library.close
     try:
         # Windows must use modern Edge; no silent fallback to the old IE renderer.
@@ -79,6 +80,7 @@ def main(argv=None):
         library.close()
         api._tasks.close()
         api._dividends.close()
+        api._book_jobs.close()
         lock.__exit__()
 
 

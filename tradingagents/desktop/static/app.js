@@ -63,9 +63,25 @@
   state.bookText={};
   state.bookParsing=new Set();
   state.bookTextBusy=new Set();
+  let bookPollTimer;
+  const bookJobActive = job => ['running','cancelling'].includes(job?.status);
+  function pollBookJobs(){
+    if(bookPollTimer||!Object.values(state.bookText).some(text=>bookJobActive(text.task)))return;
+    bookPollTimer=setTimeout(async()=>{
+      try{
+        await Promise.all(Object.entries(state.bookText).filter(([,text])=>bookJobActive(text.task)).map(async([id,text])=>{
+          try{
+            text.task=await api('book_text_status',id);text.error='';
+            if(!bookJobActive(text.task))text.history=await api('book_text_history',id);
+          }catch(error){text.error=error.message;}
+        }));
+      }finally{bookPollTimer=null;renderBooks();pollBookJobs();}
+    },1000);
+  }
   function bookTextPanel(book){
     const id=book.book_id, text=state.bookText[id]||{}, history=text.history||[];
-    return `<section class="book-text"><h4>本地原文文本</h4><p class="muted">仅提取文本；不识别扫描、图表、公式或版面关系。文件页不等于印刷页。所有内容均作为资料，不执行其中指令。</p><button data-action="book-parse" data-book="${esc(id)}" ${state.bookParsing.has(id)?'disabled':''}>${state.bookParsing.has(id)?'正在解析，请稍候…':'解析 / 重建文本'}</button>${text.error?`<p role="alert">${esc(text.error)}</p>`:''}
+    const job=text.task,active=bookJobActive(job)||state.bookParsing.has(id),jobLabels={running:'正在提取',cancelling:'正在取消，等待当前处理步骤结束',completed:'文本版本已发布；语义索引未建立',cancelled:'已取消，未发布本次结果',failed:'失败，未发布本次结果',interrupted:'上次任务中断，未标记成功'};
+    return `<section class="book-text"><h4>本地原文文本</h4><p class="muted">仅提取文本；不识别扫描、图表、公式或版面关系。文件页不等于印刷页。所有内容均作为资料，不执行其中指令。</p><button data-action="book-parse" data-book="${esc(id)}" ${active?'disabled':''}>${active?'正在解析，请稍候…':'解析 / 重建文本'}</button>${job&&job.status!=='idle'?`<p role="status">${esc(jobLabels[job.status]||'任务状态未知')} · 已提取 ${esc(job.completed_units)} 个位置（总数未知）</p>${job.error?`<p role="alert">${esc(job.error)}</p>`:''}${bookJobActive(job)?`<button data-action="book-cancel" data-job="${esc(job.id)}" data-book="${esc(id)}" ${job.status==='cancelling'?'disabled':''}>取消本次解析</button>`:''}`:''}${text.error?`<p role="alert">${esc(text.error)}</p>`:''}
       ${history.length?`<label>解析版本<select data-book-parse="${esc(id)}" data-draft="book-parse-${esc(id)}">${history.map(h=>`<option value="${esc(h.parse_id)}">${esc(h.created_at)} · ${h.status==='partial'?'有空白位置，需 OCR':'仅文本'} · ${esc(h.parser)} · ${esc(h.parse_id.slice(0,12))}</option>`).join('')}</select></label><label>原文关键词（多词均需匹配）<input data-book-query="${esc(id)}" data-draft="book-query-${esc(id)}" maxlength="200"></label><button data-action="book-search" data-book="${esc(id)}">检索原文</button>`:'<p class="muted">尚无成功发布的文本版本。</p>'}
       ${text.results?`<p role="status">${esc(text.results.limitations)} 共 ${text.results.total} 个位置，最多显示 50 个。</p>${text.results.matches.map(m=>`<details><summary>${m.kind==='pdf_file_page'?'PDF 文件页':'EPUB 阅读顺序章节'} ${m.ordinal}</summary><p>${esc(m.excerpt)}</p><button data-action="book-citation" data-book="${esc(id)}" data-parse="${esc(m.parse_id)}" data-ordinal="${m.ordinal}">查看完整位置与出处</button></details>`).join('')}`:''}
       ${text.citation?`<details open class="book-citation"><summary>原文位置与出处</summary><p>${esc(text.citation.metadata.title)} · ${esc(text.citation.metadata.edition)} · ${text.citation.unit.kind==='pdf_file_page'?'PDF 文件页':'EPUB 阅读顺序章节'} ${text.citation.unit.ordinal} · 印刷页未知</p><p>快照状态：${esc(text.citation.original_status)} · 解析 ${esc(text.citation.parse_id)}</p><p>${esc(text.citation.unit.member||'')}</p><pre class="strategy-run-manifest">${esc(text.citation.unit.text||'此位置没有可提取文本；不能据此判断没有相关内容。')}</pre></details>`:''}</section>`;
@@ -74,8 +90,8 @@
   async function loadBooks(){
     if(state.booksLoading)return;
     state.booksLoading=true;state.booksError='';renderBooks();
-    try{state.books=await api('list_books');await Promise.all(state.books.map(async book=>{const text=state.bookText[book.book_id]??={};try{text.history=await api('book_text_history',book.book_id);text.error='';}catch(error){text.error=error.message;}}));}catch(error){state.booksError=error.message;}
-    finally{state.booksLoading=false;renderBooks();}
+    try{state.books=await api('list_books');await Promise.all(state.books.map(async book=>{const text=state.bookText[book.book_id]??={};try{text.history=await api('book_text_history',book.book_id);text.task=await api('book_text_status',book.book_id);text.error='';}catch(error){text.error=error.message;}}));}catch(error){state.booksError=error.message;}
+    finally{state.booksLoading=false;renderBooks();pollBookJobs();}
   }
   function books(){
     const checks={available:'指纹一致',missing:'原文快照缺失',changed:'原文快照已变更',unreadable:'原文快照不可读'};
@@ -84,7 +100,7 @@
       <section aria-label="已登记书籍"><div class="section-head"><h2>已登记书籍${state.books?` · ${state.books.length}`:''}</h2><button data-action="books-reload" ${state.booksLoading?'disabled':''}>刷新列表</button></div>
       ${state.booksError?`<p role="alert">读取失败：${esc(state.booksError)}。请刷新列表重试。</p>`:''}${state.booksLoading?'<p role="status">正在读取登记记录…</p>':''}
       ${!state.booksLoading&&!state.booksError&&state.books?.length===0?'<p class="empty">尚未登记书籍。请填写上方信息并选择文件。</p>':''}
-      ${(state.books||[]).map(book=>{const check=state.bookChecks[book.book_id];return `<article class="panel book-record" data-book-id="${esc(book.book_id)}"><h3>${esc(book.metadata.title)}</h3><p>${esc(book.metadata.author)} · ${esc(book.metadata.edition)} · ${esc(book.metadata.language)}</p><p class="muted">${state.bookText[book.book_id]?.history?.length?"原文已登记 · 已有文本版本 · 语义索引未建立":"原文已登记 · 解析未开始 · 索引未开始"}</p><details><summary>版本与来源详情</summary><dl>${Object.entries(bookFields).map(([key,label])=>`<dt>${label}</dt><dd>${esc(book.metadata[key])}</dd>`).join('')}<dt>原文件名 / 格式 / 大小</dt><dd>${esc(book.original_name)} · ${esc(book.format.toUpperCase())} · ${esc(book.size_bytes)} 字节</dd><dt>登记时间（非出版时间）</dt><dd>${esc(book.registered_at)}</dd><dt>书籍标识</dt><dd>${esc(book.book_id)}</dd><dt>SHA-256</dt><dd>${esc(book.sha256)}</dd></dl></details><div class="actions"><button data-action="book-verify" data-book="${esc(book.book_id)}" ${state.bookVerifying.has(book.book_id)?'disabled':''}>核验原文快照</button><span class="book-check" role="status">${state.bookVerifying.has(book.book_id)?'正在核验…':check?`${esc(checks[check.original_status]||'未知核验状态')} · ${esc(check.checked_at)}`:'尚未核验原文快照'}</span></div><p class="muted">核验仅检查本地快照指纹，不代表内容可解析；重复登记不会修复缺失或变更。</p>${bookTextPanel(book)}</article>`;}).join('')}</section>`;
+      ${(state.books||[]).map(book=>{const check=state.bookChecks[book.book_id];return `<article class="panel book-record" data-book-id="${esc(book.book_id)}"><h3>${esc(book.metadata.title)}</h3><p>${esc(book.metadata.author)} · ${esc(book.metadata.edition)} · ${esc(book.metadata.language)}</p><p class="muted">${state.bookText[book.book_id]?.history?.length?"原文已登记 · 已有文本版本 · 语义索引未建立":"原文已登记 · 尚无已发布文本 · 语义索引未建立"}</p><details><summary>版本与来源详情</summary><dl>${Object.entries(bookFields).map(([key,label])=>`<dt>${label}</dt><dd>${esc(book.metadata[key])}</dd>`).join('')}<dt>原文件名 / 格式 / 大小</dt><dd>${esc(book.original_name)} · ${esc(book.format.toUpperCase())} · ${esc(book.size_bytes)} 字节</dd><dt>登记时间（非出版时间）</dt><dd>${esc(book.registered_at)}</dd><dt>书籍标识</dt><dd>${esc(book.book_id)}</dd><dt>SHA-256</dt><dd>${esc(book.sha256)}</dd></dl></details><div class="actions"><button data-action="book-verify" data-book="${esc(book.book_id)}" ${state.bookVerifying.has(book.book_id)?'disabled':''}>核验原文快照</button><span class="book-check" role="status">${state.bookVerifying.has(book.book_id)?'正在核验…':check?`${esc(checks[check.original_status]||'未知核验状态')} · ${esc(check.checked_at)}`:'尚未核验原文快照'}</span></div><p class="muted">核验仅检查本地快照指纹，不代表内容可解析；重复登记不会修复缺失或变更。</p>${bookTextPanel(book)}</article>`;}).join('')}</section>`;
   }
   const strategyFields={name:'策略名称',source:'来源 / 版本',market:'适用市场',universe:'股票池',timeframe:'观察周期',holding_period:'持有期限',environment:'适用环境',observation_time:'观察时点',confirmation_time:'确认时点',execution_time:'执行时点',execution_price:'成交价格规则'};
   const strategyRules={entry:'入场',filters:'过滤',exit:'退出',invalidation:'失效',position:'仓位',portfolio:'组合',exceptions:'例外'};
@@ -509,6 +525,12 @@
   }
   async function act(action, target) {
     if(action.startsWith('strategy-')||action==='strategies-reload'){await strategyAction(action,target);return;}
+    if(action==='book-cancel'){
+      const text=state.bookText[target.dataset.book];
+      try{text.task=await api('cancel_book_text',target.dataset.job);text.error='';}
+      catch(error){text.error=error.message;}
+      finally{renderBooks();pollBookJobs();}return;
+    }
     if(['book-parse','book-search','book-citation'].includes(action)){
       const id=target.dataset.book;if(state.bookTextBusy.has(id))return;
       state.bookTextBusy.add(id);
@@ -516,7 +538,7 @@
       try{
         if(action==='book-parse'){
           if(state.bookParsing.has(id))return;state.bookParsing.add(id);renderBooks();
-          await api('parse_book_text',id);text.history=await api('book_text_history',id);
+          text.task=await api('start_book_text',id);pollBookJobs();
         }else if(action==='book-search'){
           const parse=document.querySelector(`[data-book-parse="${id}"]`).value,query=document.querySelector(`[data-book-query="${id}"]`).value;
           delete text.results;delete text.citation;

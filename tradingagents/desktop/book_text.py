@@ -88,7 +88,11 @@ class BookTextLibrary:
             db.execute('''CREATE TABLE IF NOT EXISTS book_parses (
                 parse_id TEXT PRIMARY KEY, book_id TEXT NOT NULL, document TEXT NOT NULL)''')
 
-    def parse(self, book_id):
+    def parse(self, book_id, *, progress=None, persist=True):
+        # Background callers may stage extraction without publishing a version.
+        # Cancellation is cooperative at these boundaries, never partial success.
+        if progress:
+            progress(0)
         book = self.books.get(book_id)
         if self.books.verify(book_id)['original_status'] != 'available':
             raise ValueError('原文快照缺失、不可读或指纹不符，不能解析。')
@@ -126,6 +130,8 @@ class BookTextLibrary:
                 unit['text'] = unit['text'].strip()
                 unit['status'] = 'text_extracted' if unit['text'] else 'no_text'
                 extracted.append(unit)
+                if progress:
+                    progress(len(extracted))
             if not extracted:
                 raise ValueError('文档没有可定位的页面或章节。')
         except ValueError:
@@ -139,10 +145,18 @@ class BookTextLibrary:
                                    'PDF 使用文件页，印刷页未知；EPUB 使用阅读顺序章节，无页码。']}
         parse_id = hashlib.sha256(_json(payload).encode('utf-8')).hexdigest()
         document = dict(payload, parse_id=parse_id, created_at=now())
+        if not persist:
+            return document
         with self.store.connect() as db:
-            db.execute('INSERT OR IGNORE INTO book_parses VALUES (?, ?, ?)',
-                       (parse_id, book_id, _json(document)))
-        return self.get(parse_id)
+            return self.publish(document, db)
+
+    def publish(self, document, db):
+        """Publish staged extraction in the caller's transaction (internal use)."""
+        db.execute('INSERT OR IGNORE INTO book_parses VALUES (?, ?, ?)',
+                   (document['parse_id'], document['book_id'], _json(document)))
+        row = db.execute('SELECT document FROM book_parses WHERE parse_id=?',
+                         (document['parse_id'],)).fetchone()
+        return json.loads(row[0])
 
     def get(self, parse_id):
         with self.store.connect() as db:

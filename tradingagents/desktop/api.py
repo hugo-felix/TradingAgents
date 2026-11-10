@@ -193,6 +193,18 @@ class DesktopAPI:
         return BookTextLibrary(self._store).history(book_id)
 
     @response
+    def start_book_text(self, book_id):
+        return self._book_jobs.start(book_id)
+
+    @response
+    def book_text_status(self, book_id):
+        return self._book_jobs.status(book_id)
+
+    @response
+    def cancel_book_text(self, job_id):
+        return self._book_jobs.cancel(job_id)
+
+    @response
     def search_book_text(self, parse_id, query):
         from tradingagents.desktop.book_text import BookTextLibrary
         return BookTextLibrary(self._store).search(parse_id, query)
@@ -394,6 +406,8 @@ class DesktopAPI:
         self._window = None
         self._tasks = TaskManager(store, environment_builder=self._credential_environment)
         self._dividends = DividendJobs(store)
+        from tradingagents.desktop.book_jobs import BookTextJobs
+        self._book_jobs = BookTextJobs(store)
         self._watch_lock = threading.RLock()
 
     @staticmethod
