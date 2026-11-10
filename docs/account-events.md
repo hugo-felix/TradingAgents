@@ -73,7 +73,41 @@ R03 的前置记录能力：调用者明确登记入出金、现金分红和拆�
 
 登记、查询及列表返回当前 `ledger_status: recorded` 或 `voided`；`void` 字段分别为 `null` 或完整作废记录。`recorded` 仅表示尚未作废，不代表券商确认或经济有效。列表包含作废历史，总数包括作废事件，不能直接将所有记录汇总。原登记请求重试仍显示已作废，不会重新激活事件；原事件指纹保持不变，作废记录有独立指纹。系统作废时间不改变原事件发生时间，不构成历史时点已知信息。
 
-当前没有原子替换、更正链或恢复流程。需要登记正确事件时，先核实原记录作废成功，再使用新的稳定事件标识登记，并在来源说明中保留关联；两步之间可能中断，应查询核对，不能推断替换已完成。备份同时保留原事件与作废记录，旧工作空间首次使用时追加作废表。
+## 原子更正
+
+误录需要替代记录时，使用 `correct`，一次事务完成新事件登记、原事件作废与更正关联。任一步失败均回滚，原记录保持原状。更正 JSON 必须包含上述四个作废字段，另加替代事件的 `kind` 和完整 `payload`：
+
+```json
+{
+  "record_id": "待更正记录的实际 record_id",
+  "request_id": "synthetic-correction-1",
+  "reason": "合成记录金额误录",
+  "recorded_by": "合成操作人",
+  "kind": "cash_transfer",
+  "payload": {
+    "broker": "synthetic-broker",
+    "account_ref": "synthetic-account",
+    "event_id": "synthetic-deposit-1-corrected",
+    "occurred_at": "2024-01-02T10:15:00+08:00",
+    "source_label": "合成更正凭证",
+    "currency": "CNY",
+    "direction": "deposit",
+    "amount": "101.00"
+  }
+}
+```
+
+关闭应用后执行（JSON 文件限制与登记相同）：
+
+```powershell
+.\.venv\Scripts\python.exe -m tradingagents.desktop.account_events --workspace ./output/dev-workspace correct ./output/correction.json
+```
+
+桌面 API 为 `correct_account_event(record_id, request_id, reason, recorded_by, kind, payload)`。替代事件必须使用原券商及账户下尚未登记的新事件标识；不能复用已有事件，即使内容相同。账户身份误录应另行核实并作废、登记，当前不支持跨账户更正。已作废的事件不能再次更正，不能恢复事件。更正与独立作废共用工作空间请求标识，不能借更正覆盖已有请求；同一更正的规范化内容重试返回原更正凭证，改变目标、替代内容、原因或操作人均拒绝。
+
+事件查询与分页新增 `replaces`（它替代的原记录 ID）及 `replaced_by`（替代它的记录 ID），无关联时为 `null`。替代事件以后仍可更正，形成可逐条查询的追加链；原始事件内容与指纹始终保留。更正凭证是固定的历史记录，重试返回它不表示替代事件目前仍有效，应再查询事件状态。原事件的 `void` 同时包含替代记录 ID。列表保留整条历史，不能把链中各记录当成独立经济事件相加。
+
+备份同时保留原事件、作废及更正记录，旧工作空间首次使用时追加对应表。更正仅处理本地误录，不发送券商指令、不调整持仓或计算收益，仍须用实际凭证核实。
 
 ## 绩效与完整性限制
 

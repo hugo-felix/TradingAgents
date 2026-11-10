@@ -1,4 +1,5 @@
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -315,3 +316,182 @@ def test_void_cli_api_backup_and_old_schema(tmp_path, capsys):
     restored = AccountEventLedger(DesktopStore(tmp_path / 'restored'))
     assert restored.list() == ledger.list()
     assert restored.void(**fields)['already_recorded']
+
+
+def correction(record_id, **changes):
+    return {**{'record_id': record_id, 'request_id': 'correct-1', 'reason': '金额误录',
+               'recorded_by': '合成操作人', 'kind': 'cash_transfer',
+               'payload': payload(event_id='replacement', amount='101')}, **changes}
+
+
+def test_correction_preserves_documents_and_traversable_history(tmp_path):
+    store = DesktopStore(tmp_path)
+    ledger = AccountEventLedger(store)
+    original = ledger.record('cash_transfer', payload())
+    with store.connect() as db:
+        before = db.execute('SELECT document FROM account_events').fetchone()[0]
+    fields = correction(original['record_id'])
+    result = ledger.correct(**fields)
+    replacement = ledger.get(result['replacement_id'])
+    assert replacement['raw'] == fields['payload']
+    assert replacement['payload']['amount'] == '101'
+    assert replacement['replaces'] == original['record_id']
+    assert replacement['ledger_status'] == 'recorded'
+    assert replacement['effects'] == 'not_applied'
+    assert ledger.get(original['record_id'])['replaced_by'] == replacement['record_id']
+    assert ledger.get(original['record_id'])['ledger_status'] == 'voided'
+    assert ledger.correct(**fields) == {**result, 'already_recorded': True}
+    assert ledger.correct(**{**fields, 'payload': payload(
+        event_id='replacement', amount='0101.00')})['already_recorded']
+    # Chained corrections retain every original document; retry does not reactivate any event.
+    second = ledger.correct(**correction(replacement['record_id'], request_id='correct-2',
+                                        payload=payload(event_id='replacement-2', amount='102')))
+    assert ledger.get(replacement['record_id'])['replaced_by'] == second['replacement_id']
+    assert ledger.correct(**fields) == {**result, 'already_recorded': True}
+    assert ledger.record('cash_transfer', fields['payload'])['ledger_status'] == 'voided'
+    with store.connect() as db:
+        assert db.execute('SELECT document FROM account_events WHERE record_id=?',
+                          (original['record_id'],)).fetchone()[0] == before
+        assert db.execute('SELECT COUNT(*) FROM holdings').fetchone()[0] == 0
+    assert ledger.list()['total'] == 3
+
+
+@pytest.mark.parametrize('changes', [
+    {'request_id': ''}, {'reason': None}, {'recorded_by': True}, {'record_id': 'unknown'},
+    {'kind': 'bad'}, {'payload': {}}, {'payload': payload(event_id='replacement', amount='0')},
+    {'payload': payload(event_id='replacement', broker='other')},
+    {'payload': payload(event_id='replacement', account_ref='other')},
+    {'payload': payload()},  # The original identity cannot be reused, even with identical content.
+])
+def test_invalid_correction_leaves_no_partial_state(tmp_path, changes):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    original = ledger.record('cash_transfer', payload())
+    before = ledger.list()
+    with pytest.raises(ValueError):
+        ledger.correct(**{**correction(original['record_id']), **changes})
+    assert ledger.list() == before
+    assert not ledger.correct(**correction(original['record_id']))['already_recorded']
+
+
+def test_correction_rejects_existing_targets_voided_sources_and_request_conflicts(tmp_path):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    original = ledger.record('cash_transfer', payload())['record_id']
+    ledger.record('cash_transfer', payload(event_id='replacement', amount='101'))
+    with pytest.raises(ValueError, match='新事件'):
+        ledger.correct(**correction(original))
+    assert ledger.get(original)['ledger_status'] == 'recorded'
+    other = ledger.record('split', payload('split', event_id='other'))['record_id']
+    ledger.void(other, 'void-1', '误录', '合成操作人')
+    for fields in (correction(other), correction(original, request_id='void-1')):
+        with pytest.raises(ValueError):
+            ledger.correct(**fields)
+    result = ledger.correct(**correction(original, payload=payload(event_id='fresh')))
+    for changes in ({'reason': '不同原因'}, {'recorded_by': '另一人'}, {'record_id': other},
+                    {'payload': payload(event_id='another')}, {'request_id': 'new-request'}):
+        with pytest.raises(ValueError):
+            ledger.correct(**{**correction(original, payload=payload(event_id='fresh')), **changes})
+    with pytest.raises(ValueError):
+        ledger.void(result['replacement_id'], 'correct-1', '误录', '合成操作人')
+    assert ledger.list()['total'] == 4
+
+
+def test_correction_rolls_back_after_replacement_and_void_insert(tmp_path):
+    store = DesktopStore(tmp_path)
+    ledger = AccountEventLedger(store)
+    original = ledger.record('cash_transfer', payload())['record_id']
+    with store.connect() as db:
+        db.execute("CREATE TRIGGER reject_correction BEFORE INSERT ON account_event_corrections "
+                   "BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match='synthetic failure'):
+        ledger.correct(**correction(original))
+    assert ledger.list()['total'] == 1
+    assert ledger.get(original)['ledger_status'] == 'recorded'
+    with store.connect() as db:
+        assert db.execute('SELECT COUNT(*) FROM account_event_voids').fetchone()[0] == 0
+        db.execute('DROP TRIGGER reject_correction')
+    assert not ledger.correct(**correction(original))['already_recorded']
+
+
+def test_concurrent_correction_and_void_have_only_one_winner(tmp_path):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    original = ledger.record('cash_transfer', payload())['record_id']
+
+    def attempt(fields):
+        try:
+            return ledger.correct(**fields)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(attempt, [correction(original), correction(original)]))
+    assert sorted(item['already_recorded'] for item in results) == [False, True]
+    assert ledger.list()['total'] == 2
+    target = results[0]['replacement_id']
+
+    def race(action):
+        try:
+            if action == 'void':
+                return ledger.void(target, 'void-race', '误录', '合成操作人')
+            return ledger.correct(**correction(target, request_id='correct-race',
+                                               payload=payload(event_id='race')))
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(2) as pool:
+        raced = list(pool.map(race, ['void', 'correct']))
+    assert sum(item is not None for item in raced) == 1
+    assert ledger.list()['total'] == (2 if raced[0] else 3)
+
+
+def test_correction_cli_api_backup_and_old_schema(tmp_path, capsys):
+    from tradingagents.desktop.backup import create_backup, restore_backup
+
+    store = DesktopStore(tmp_path / 'workspace')
+    ledger = AccountEventLedger(store)
+    original = ledger.record('cash_transfer', payload())['record_id']
+    with store.connect() as db:
+        db.execute('DROP TABLE account_event_corrections')
+    ledger = AccountEventLedger(store)
+    fields = correction(original)
+    path = tmp_path / 'correct.json'
+    path.write_text(json.dumps(fields), encoding='utf-8-sig')
+    prefix = ['--workspace', str(store.directory)]
+    account_events.main([*prefix, 'correct', str(path)])
+    result = json.loads(capsys.readouterr().out)
+    api = DesktopAPI(store)
+    assert api.correct_account_event(**fields)['data'] == {**result, 'already_recorded': True}
+    assert not api.correct_account_event(**{**fields, 'reason': '修改'})['ok']
+    for content in ('{}', '[]', '{', '0' * 65537):
+        path.write_text(content, encoding='utf-8')
+        with pytest.raises(SystemExit) as caught:
+            account_events.main([*prefix, 'correct', str(path)])
+        assert caught.value.code == 1
+    archive = tmp_path / 'backup.zip'
+    create_backup(store.directory, archive)
+    restore_backup(archive, tmp_path / 'restored')
+    restored = AccountEventLedger(DesktopStore(tmp_path / 'restored'))
+    assert restored.list() == ledger.list()
+    assert restored.correct(**fields)['already_recorded']
+
+
+@pytest.mark.parametrize('shared_request', [False, True])
+def test_concurrent_conflicting_corrections_do_not_fork_history(tmp_path, shared_request):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    first = ledger.record('cash_transfer', payload())['record_id']
+    second = ledger.record('cash_transfer', payload(event_id='second'))['record_id']
+    requests = [correction(first, request_id='one', payload=payload(event_id='new-one')),
+                correction(second if shared_request else first,
+                           request_id='one' if shared_request else 'two',
+                           payload=payload(event_id='new-two'))]
+
+    def attempt(fields):
+        try:
+            return ledger.correct(**fields)
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(attempt, requests))
+    assert sum(item is not None for item in results) == 1
+    assert ledger.list()['total'] == 3
+    assert sum(ledger.get(target)['ledger_status'] == 'voided' for target in (first, second)) == 1

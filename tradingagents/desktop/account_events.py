@@ -64,13 +64,65 @@ class AccountEventLedger:
             db.execute('''CREATE TABLE IF NOT EXISTS account_event_voids (
                 record_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
                 fingerprint TEXT NOT NULL, document TEXT NOT NULL)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS account_event_corrections (
+                record_id TEXT PRIMARY KEY, replacement_id TEXT NOT NULL UNIQUE,
+                request_id TEXT NOT NULL UNIQUE, fingerprint TEXT NOT NULL,
+                document TEXT NOT NULL)''')
 
     @staticmethod
     def _view(db, document):
         row = db.execute('SELECT document FROM account_event_voids WHERE record_id=?',
                          (document['record_id'],)).fetchone()
+        outgoing = db.execute('SELECT replacement_id FROM account_event_corrections '
+                              'WHERE record_id=?', (document['record_id'],)).fetchone()
+        incoming = db.execute('SELECT record_id FROM account_event_corrections '
+                              'WHERE replacement_id=?', (document['record_id'],)).fetchone()
         return {**document, 'ledger_status': 'voided' if row else 'recorded',
-                'void': json.loads(row[0]) if row else None}
+                'void': json.loads(row[0]) if row else None,
+                'replaced_by': outgoing[0] if outgoing else None,
+                'replaces': incoming[0] if incoming else None}
+
+    def correct(self, record_id, request_id, reason, recorded_by, kind, payload):
+        fields = {key: _text(value, key) for key, value in {
+            'record_id': record_id, 'request_id': request_id,
+            'reason': reason, 'recorded_by': recorded_by}.items()}
+        normalized = normalize(kind, payload)
+        fingerprint = _fingerprint({**fields, 'kind': kind, 'payload': normalized})
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT fingerprint, document FROM account_event_corrections '
+                                  'WHERE request_id=?', (fields['request_id'],)).fetchone()
+            if previous:
+                if previous['fingerprint'] != fingerprint:
+                    raise ValueError('更正请求标识已有不同内容；不能覆盖更正历史。')
+                return {**json.loads(previous['document']), 'already_recorded': True}
+            original = db.execute('SELECT broker, account_ref FROM account_events '
+                                  'WHERE record_id=?', (fields['record_id'],)).fetchone()
+            if not original:
+                raise ValueError('未找到账户事件。')
+            if (original['broker'], original['account_ref']) != (
+                    normalized['broker'], normalized['account_ref']):
+                raise ValueError('更正必须属于原券商及账户。')
+            if db.execute('SELECT 1 FROM account_event_voids WHERE record_id=? OR request_id=?',
+                          (fields['record_id'], fields['request_id'])).fetchone():
+                raise ValueError('原事件已作废或请求标识已使用；不能更正。')
+            replacement = self._record(db, kind, payload)
+            if replacement['already_recorded']:
+                raise ValueError('更正必须使用尚未登记的新事件标识。')
+            replacement_id = replacement['record_id']
+            void = {**fields, 'recorded_at': now(), 'fingerprint': _fingerprint(fields),
+                    'verification': 'caller_declared_unverified', 'effects': 'not_applied',
+                    'replacement_id': replacement_id}
+            db.execute('INSERT INTO account_event_voids VALUES (?, ?, ?, ?)',
+                       (fields['record_id'], fields['request_id'], void['fingerprint'],
+                        json.dumps(void, ensure_ascii=False)))
+            document = {**fields, 'replacement_id': replacement_id, 'recorded_at': now(),
+                        'fingerprint': fingerprint, 'verification': 'caller_declared_unverified',
+                        'effects': 'not_applied', 'performance': 'not_evaluated'}
+            db.execute('INSERT INTO account_event_corrections VALUES (?, ?, ?, ?, ?)',
+                       (fields['record_id'], replacement_id, fields['request_id'], fingerprint,
+                        json.dumps(document, ensure_ascii=False)))
+        return {**document, 'already_recorded': False}
 
     def void(self, record_id, request_id, reason, recorded_by):
         fields = {key: _text(value, key) for key, value in {
@@ -99,30 +151,33 @@ class AccountEventLedger:
         return {**document, 'already_recorded': False}
 
     def record(self, kind, payload):
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return self._record(db, kind, payload)
+
+    def _record(self, db, kind, payload):
         normalized = normalize(kind, payload)
         identity = {key: normalized[key] for key in ('broker', 'account_ref', 'event_id')}
         record_id = _fingerprint(identity)
         fingerprint = _fingerprint({'kind': kind, 'payload': normalized})
         # Keep precisely the submitted JSON, separate from normalized amounts and UTC times.
         raw = json.loads(json.dumps(payload, ensure_ascii=False))
-        with self.store.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            previous = db.execute('SELECT fingerprint, document FROM account_events '
-                                  'WHERE record_id=?', (record_id,)).fetchone()
-            if previous:
-                if previous['fingerprint'] != fingerprint:
-                    raise ValueError('同一券商账户事件标识已有不同内容；不能覆盖历史事件。')
-                return {**self._view(db, json.loads(previous['document'])), 'already_recorded': True}
-            document = {'record_id': record_id, 'kind': kind, 'recorded_at': now(),
-                        'payload': normalized, 'raw': raw, 'fingerprint': fingerprint,
-                        'verification': 'caller_declared_unverified',
-                        'account_completeness': 'not_established', 'effects': 'not_applied',
-                        'performance': 'not_evaluated'}
-            db.execute('INSERT INTO account_events VALUES (?, ?, ?, ?, ?, ?, ?)',
-                       (record_id, fingerprint, kind, normalized['broker'],
-                        normalized['account_ref'], normalized.get('ticker'),
-                        json.dumps(document, ensure_ascii=False)))
-            result = self._view(db, document)
+        previous = db.execute('SELECT fingerprint, document FROM account_events '
+                              'WHERE record_id=?', (record_id,)).fetchone()
+        if previous:
+            if previous['fingerprint'] != fingerprint:
+                raise ValueError('同一券商账户事件标识已有不同内容；不能覆盖历史事件。')
+            return {**self._view(db, json.loads(previous['document'])), 'already_recorded': True}
+        document = {'record_id': record_id, 'kind': kind, 'recorded_at': now(),
+                    'payload': normalized, 'raw': raw, 'fingerprint': fingerprint,
+                    'verification': 'caller_declared_unverified',
+                    'account_completeness': 'not_established', 'effects': 'not_applied',
+                    'performance': 'not_evaluated'}
+        db.execute('INSERT INTO account_events VALUES (?, ?, ?, ?, ?, ?, ?)',
+                   (record_id, fingerprint, kind, normalized['broker'],
+                    normalized['account_ref'], normalized.get('ticker'),
+                    json.dumps(document, ensure_ascii=False)))
+        result = self._view(db, document)
         return {**result, 'already_recorded': False}
 
     def get(self, record_id):
@@ -170,6 +225,8 @@ def main(argv=None):
     record.add_argument('json', type=Path)
     void = sub.add_parser('void')
     void.add_argument('json', type=Path)
+    correct = sub.add_parser('correct')
+    correct.add_argument('json', type=Path)
     get = sub.add_parser('get')
     get.add_argument('record_id')
     listing = sub.add_parser('list')
@@ -186,17 +243,19 @@ def main(argv=None):
             raise ValueError('不能打开未完整恢复的工作空间。')
         with WorkspaceLock(args.workspace):
             ledger = AccountEventLedger(DesktopStore(args.workspace))
-            if args.action in ('record', 'void'):
+            if args.action in ('record', 'void', 'correct'):
                 with args.json.open('rb') as source:
                     content = source.read(65537)
                 if len(content) > 65536:
                     raise ValueError('事件 JSON 不得超过 64 KiB。')
                 payload = json.loads(content.decode('utf-8-sig'))
-                if args.action == 'void':
-                    if (not isinstance(payload, dict) or set(payload) != {
-                            'record_id', 'request_id', 'reason', 'recorded_by'}):
-                        raise ValueError('作废字段必须与模板完全一致。')
-                    result = ledger.void(**payload)
+                if args.action in ('void', 'correct'):
+                    expected = {'record_id', 'request_id', 'reason', 'recorded_by'}
+                    if args.action == 'correct':
+                        expected |= {'kind', 'payload'}
+                    if not isinstance(payload, dict) or set(payload) != expected:
+                        raise ValueError('作废或更正字段必须与模板完全一致。')
+                    result = getattr(ledger, args.action)(**payload)
                 else:
                     result = ledger.record(args.kind, payload)
             elif args.action == 'get':
