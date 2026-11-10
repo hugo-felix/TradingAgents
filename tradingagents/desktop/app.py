@@ -29,6 +29,9 @@ def main(argv=None):
         sys.argv.remove('--desktop-worker')
         return worker_main()
     args = parse_args(argv)
+    from tradingagents.desktop.backup import INCOMPLETE
+    if (args.data_dir / INCOMPLETE).exists():
+        raise SystemExit('此工作空间恢复未完成，请从备份恢复到另一个新目录。')
     try:
         import webview
     except ImportError:
