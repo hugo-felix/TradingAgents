@@ -20,6 +20,7 @@
     if (!doc) return;
     const parent = container.querySelector('[aria-label="策略版本详情"]');
     if (!parent) return;
+    window.StockSeekTiming?.edit(parent, doc, api, Boolean(container.querySelector('#strategy-form')));
     const key = `${doc.strategy_id}:${doc.version}`;
     if (!cache.has(key)) cache.set(key, {asOf:'',input:'',history:null,selected:null,busy:false,error:'',token:0});
     const state = cache.get(key);
