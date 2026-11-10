@@ -168,6 +168,15 @@ class TradeLedger:
                        (batch_id, json.dumps(document, ensure_ascii=False)))
         return {**document, 'already_imported': False}
 
+    def get_fill(self, trade_id):
+        trade_id = _text(trade_id, 'trade_id')
+        with self.store.connect() as db:
+            row = db.execute('SELECT document FROM actual_fills WHERE trade_id=?',
+                             (trade_id,)).fetchone()
+        if not row:
+            raise ValueError('未找到实际成交。')
+        return json.loads(row[0])
+
     def get_import(self, batch_id):
         with self.store.connect() as db:
             row = db.execute('SELECT document FROM actual_fill_imports WHERE batch_id=?',
@@ -212,6 +221,19 @@ def main(argv=None):
     listing.add_argument('--offset', type=int, default=0)
     batch = sub.add_parser('batch')
     batch.add_argument('batch_id')
+    single = sub.add_parser('get')
+    single.add_argument('trade_id')
+    for action in ('context-save', 'context', 'context-history'):
+        command = sub.add_parser(action)
+        command.add_argument('trade_id')
+        if action == 'context-save':
+            command.add_argument('json', type=Path)
+            command.add_argument('--expected-version', required=True, type=int)
+        elif action == 'context':
+            command.add_argument('--version', type=int)
+        else:
+            command.add_argument('--limit', type=int, default=100)
+            command.add_argument('--offset', type=int, default=0)
     args = parser.parse_args(argv)
     try:
         if not (args.workspace / 'workspace.sqlite3').is_file():
@@ -235,8 +257,24 @@ def main(argv=None):
                               if key not in {'rows', 'csv_text'}}
             elif args.action == 'list':
                 result = ledger.list_fills(args.ticker, limit=args.limit, offset=args.offset)
-            else:
+            elif args.action == 'get':
+                result = ledger.get_fill(args.trade_id)
+            elif args.action == 'batch':
                 result = ledger.get_import(args.batch_id)
+            else:
+                from tradingagents.desktop.trade_contexts import TradeContextRegistry
+                contexts = TradeContextRegistry(ledger.store)
+                if args.action == 'context-save':
+                    with args.json.open('rb') as source:
+                        content = source.read(65537)
+                    if len(content) > 65536:
+                        raise ValueError('关联 JSON 不得超过 64 KiB。')
+                    result = contexts.record(args.trade_id, json.loads(content.decode('utf-8-sig')),
+                                             expected_version=args.expected_version)
+                elif args.action == 'context':
+                    result = contexts.get(args.trade_id, args.version)
+                else:
+                    result = contexts.history(args.trade_id, limit=args.limit, offset=args.offset)
     except (OSError, ValueError, sqlite3.Error) as exc:
         parser.exit(1, f'操作失败：{exc}\n')
     print(json.dumps(result, ensure_ascii=False))

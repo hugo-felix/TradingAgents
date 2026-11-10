@@ -275,6 +275,27 @@ class DesktopAPI:
         from tradingagents.desktop.trades import TradeLedger
         return TradeLedger(self._store).list_fills(ticker, limit=limit, offset=offset)
 
+    @response
+    def get_actual_trade(self, trade_id):
+        from tradingagents.desktop.trades import TradeLedger
+        return TradeLedger(self._store).get_fill(trade_id)
+
+    @response
+    def record_trade_context(self, trade_id, context, expected_version=0):
+        from tradingagents.desktop.trade_contexts import TradeContextRegistry
+        return TradeContextRegistry(self._store).record(
+            trade_id, context, expected_version=expected_version)
+
+    @response
+    def get_trade_context(self, trade_id, version=None):
+        from tradingagents.desktop.trade_contexts import TradeContextRegistry
+        return TradeContextRegistry(self._store).get(trade_id, version)
+
+    @response
+    def trade_context_history(self, trade_id, limit=100, offset=0):
+        from tradingagents.desktop.trade_contexts import TradeContextRegistry
+        return TradeContextRegistry(self._store).history(trade_id, limit=limit, offset=offset)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library

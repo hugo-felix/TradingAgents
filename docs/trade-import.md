@@ -45,4 +45,30 @@ Python 服务对应 `preview`、`import_csv`、`list_fills`、`get_import`。同
 
 数据只追加到 `actual_fills` 与 `actual_fill_imports`，不提供覆盖或删除接口。来源标签和记录时间属于本地登记证据，不证明实际成交或历史上已经持有某项判断。原文按传入文本保存，指纹是该文本的 UTF-8 字节指纹，不声称保留券商文件的原始编码字节。包含敏感账户信息的工作空间及其备份应自行妥善保管，不提交源码仓库。
 
-工作空间备份包含台账和审计记录，使用说明见 [备份与恢复](workspace-backup.md)。R01 的标准 CSV 导入、来源保存与幂等检测已实现；现金、分红、公司行动、完整收益、与报告/策略的关联、计划/模拟台账及对账界面仍未实现，R02 及其余相关事项保持未完成。
+工作空间备份包含台账和审计记录，使用说明见 [备份与恢复](workspace-backup.md)。现金、分红、公司行动、完整收益、计划/模拟台账及对账界面仍未实现。
+
+## 成交依据与个人理由
+
+每笔实际成交可追加独立的关联版本，支持只填个人理由或完全没有关联的历史成交。报告和策略均保存原始数据库 JSON 文本、解析内容及该文本的 UTF-8 SHA-256；策略必须指定已确认的明确版本。随后修改策略或查询报告，不会重写旧关联。指纹用于核对快照内容，不代表整个工作空间受到防篡改保护。
+
+报告必须属于同一股票，分析日期不得晚于成交日期。报告在成交前已登记时标记 `availability=recorded_before_trade`；晚导入的历史报告标记 `not_established`。策略版本的创建、确认时间均不得晚于成交时间。所有关联仍固定为 `knowledge_at_trade=not_established`、`usage=personal_review_only`，登记时间是当前补录时间，不证明当时已知、实际交易原因或历史回测可用性，也不会调用模型或更改成交、持仓、报告和策略。
+
+在 UTF-8 JSON 文件中填写完整的新关联，例如以下合成补录内容。字段可省略或为 `null`；个人理由为不含控制字符的单行文本，最多 10000 字符。有策略标识时必须同时填写正整数版本：
+
+```json
+{"personal_reason":"合成补录理由", "report_id":null, "strategy_id":null, "strategy_version":null}
+```
+
+关闭工作空间后执行，替换实际成交标识与文件路径：
+
+```powershell
+.\.venv\Scripts\python.exe -m tradingagents.desktop.trades --workspace D:\StockSeek\workspace get TRADE_ID
+.\.venv\Scripts\python.exe -m tradingagents.desktop.trades --workspace D:\StockSeek\workspace context TRADE_ID
+.\.venv\Scripts\python.exe -m tradingagents.desktop.trades --workspace D:\StockSeek\workspace context-save TRADE_ID D:\StockSeek\context.json --expected-version 0
+.\.venv\Scripts\python.exe -m tradingagents.desktop.trades --workspace D:\StockSeek\workspace context TRADE_ID --version 1
+.\.venv\Scripts\python.exe -m tradingagents.desktop.trades --workspace D:\StockSeek\workspace context-history TRADE_ID --limit 100 --offset 0
+```
+
+JSON 文件最大 64 KiB。第一次保存预期版本为 0，以后使用查询得到的最新版本；过期写入会失败，应先重新读取再决定是否重试。每次保存都是完整的新版本，省略字段或填写 `null` 只解除新版本的关联，旧版本仍可读取；不提供覆盖和删除。已存在但未补录的成交查询关联返回 `null`，历史列表为空；未知成交会报错。输出可能包含私人理由和报告全文，请妥善保管。
+
+桌面桥接提供 `get_actual_trade(trade_id)`、`record_trade_context(trade_id, context, expected_version=0)`、`get_trade_context(trade_id, version=None)` 和 `trade_context_history(trade_id, limit=100, offset=0)`。Python 服务为 `TradeContextRegistry(store)` 的 `record/get/history`，保存到独立的 `actual_fill_contexts` 表，随工作空间备份恢复。当前没有关联管理页面。
