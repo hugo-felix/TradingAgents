@@ -57,6 +57,13 @@
 | R03 原子更正 | Codex / 当前 Windows 工作区 | main（第十九批） | 新事件、原事件作废与更正链一次提交，失败全部回滚；支持幂等重试和逐条追溯 |
 | R05/R08 桌面个人复盘 | Codex / 当前 Windows 工作区 | main（第二十三批） | 实际成交选择、分维度评估、不可变历史及个人规则草案；真实 API 离线浏览器验收，不提供自动评价或收益归因 |
 
+### 2026-11-10 第三十二批实施说明
+
+- M08 条件跟踪桌面入口由 Codex / 当前 Windows 工作区在 `main` 认领；开工核对本地及远端均为 `9780350`，保留原有未提交修改。
+- 从已选条件检查创建具名、固定版本的跟踪计划，明确设置次数及期限；只在主动提交检查时计算。界面展示连续计数、暂停原因、完整检查及事件链，计划和历史可刷新恢复。旧检查重试不倒退最近历史状态，失败保留输入与证据，异步切换版本不串结果。
+- 文档见 `docs/condition-tracking.md`，新增真实 API 离线验收 `desktop/condition_tracking_smoke.py`，覆盖创建不自动评估、版本隔离、验证失败、独立观测、幂等、缺数据暂停、证据转义、读取失败、异步切换、刷新及四种宽度。没有自动行情、调度、通知或真实计划试点，M08 整项保持未完成。
+- 验证：定向测试 97 passed；默认套件 2715 passed、7 skipped、1 deselected、100 subtests passed（`output/todo-condition-tracking-ui-pytest.log`）。条件跟踪专项、条件检查、策略对照、时序审计及桌面整体 Chrome 离线验收通过。本批 Python Ruff、JavaScript 语法及差异检查通过；全仓 Ruff 仍仅有原有未提交 `tradingagents/desktop/valuation.py:93` 的 B905。未运行 integration、原生窗口、打包或其他操作系统验收。
+
 ### 2026-11-10 第三十一批实施说明
 
 - M08 离线条件跟踪与防抖由 Codex / 当前 Windows 工作区在 `main` 认领；开工核对本地与远端均为 `a02f828`，保留已有未提交修改。

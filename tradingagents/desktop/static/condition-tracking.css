@@ -1,0 +1,4 @@
+[aria-label="条件跟踪"] { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 16px; min-width: 0; overflow-wrap: anywhere; }
+[aria-label="条件跟踪"] fieldset { min-width: 0; border: 0; padding: 0; margin: 0; }
+.tracking-plans, .tracking-events { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+[aria-label="条件跟踪"] pre { white-space: pre-wrap; overflow-wrap: anywhere; }

@@ -54,6 +54,7 @@
       });});
       window.StockSeekTiming?.mount(panel,doc,state.selected,api);
       window.StockSeekComparisons?.mount(panel,doc,state.selected,api);
+      window.StockSeekTracking?.mount(panel,doc,state.selected,api);
     }
     async function run(action) {
       if(state.busy)return;

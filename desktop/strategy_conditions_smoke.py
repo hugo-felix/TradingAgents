@@ -80,7 +80,7 @@ def main():
         page.locator('.sidebar [data-page="strategies"]').click()
         page.locator('[data-action="strategy-open"]').click()
         panel = page.locator('[aria-label="策略条件核对"]')
-        panel.locator('h3:has-text("v4")').wait_for()
+        panel.locator(':scope > h3:has-text("v4")').wait_for()
         page.locator('[data-action="strategy-version"][data-version="2"]').click()
         panel.locator('[name="as_of"]').fill('2020-01-02T16:00:00+08:00')
         panel.locator('[name="data"]').fill('{invalid')
