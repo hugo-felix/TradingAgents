@@ -312,6 +312,22 @@ class DesktopAPI:
         return OperationLedger(self._store).list(kind, ticker, limit=limit, offset=offset)
 
     @response
+    def record_account_event(self, kind, payload):
+        from tradingagents.desktop.account_events import AccountEventLedger
+        return AccountEventLedger(self._store).record(kind, payload)
+
+    @response
+    def get_account_event(self, record_id):
+        from tradingagents.desktop.account_events import AccountEventLedger
+        return AccountEventLedger(self._store).get(record_id)
+
+    @response
+    def list_account_events(self, broker=None, account_ref=None, kind=None, limit=100, offset=0):
+        from tradingagents.desktop.account_events import AccountEventLedger
+        return AccountEventLedger(self._store).list(
+            broker, account_ref, kind, limit=limit, offset=offset)
+
+    @response
     def record_trade_review(self, trade_id, notes, request_id):
         from tradingagents.desktop.reviews import ReviewRegistry
         return ReviewRegistry(self._store).record(trade_id, notes, request_id)
