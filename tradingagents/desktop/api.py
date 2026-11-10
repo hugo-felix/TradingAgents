@@ -197,6 +197,10 @@ class DesktopAPI:
         return self._book_jobs.start(book_id)
 
     @response
+    def resume_book_text(self, job_id):
+        return self._book_jobs.resume(job_id)
+
+    @response
     def book_text_status(self, book_id):
         return self._book_jobs.status(book_id)
 

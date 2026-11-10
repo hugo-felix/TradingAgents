@@ -79,9 +79,14 @@ def main():
         record.locator('[data-action="book-parse"]:enabled').wait_for()
         assert api._book_jobs.status(book)['status'] == 'cancelled'
         assert api._book_jobs.library.history(book) == []
-        record.locator('[data-action="book-parse"]').click()
+        record.locator('[data-action="book-resume"]').wait_for()
+        page.reload()
+        page.wait_for_selector('.page-head')
+        page.locator('.sidebar [data-page="books"]').click()
+        record.locator('[data-action="book-resume"]').click()
         record.locator('[data-book-parse]').wait_for(state='attached')
         assert api._book_jobs.status(book)['status'] == 'completed'
+        assert api._book_jobs.status(book)['resumed_from'] == first
         assert len(api._book_jobs.library.history(book)) == 1
         source_snapshot = store.directory / 'books' / 'originals'
         next(source_snapshot.iterdir()).unlink()
@@ -90,7 +95,7 @@ def main():
         assert api._book_jobs.status(book)['status'] == 'failed'
         assert len(api._book_jobs.library.history(book)) == 1
         assert not errors, errors
-        print('Book extraction cancellation, reload, retry and failure acceptance passed')
+        print('Book extraction cancellation, reload, checkpoint resume and failure acceptance passed')
 
 
 if __name__ == '__main__':

@@ -7,6 +7,7 @@ import json
 import threading
 from uuid import uuid4
 
+from tradingagents.desktop.book_checkpoints import BookCheckpoint
 from tradingagents.desktop.book_text import BookTextLibrary
 from tradingagents.desktop.store import now
 
@@ -25,6 +26,7 @@ class BookTextJobs:
         self.thread = None
         self.current = None
         self.closed = False
+        BookCheckpoint(store, '')  # Initialize checkpoint tables before recovering jobs.
         with store.connect() as db:
             db.execute('''CREATE TABLE IF NOT EXISTS book_text_jobs (
                 id TEXT PRIMARY KEY, book_id TEXT NOT NULL, document TEXT NOT NULL)''')
@@ -45,9 +47,30 @@ class BookTextJobs:
         with self.lock, self.store.connect() as db:
             row = db.execute('SELECT document FROM book_text_jobs WHERE book_id=? '
                              'ORDER BY rowid DESC LIMIT 1', (book_id,)).fetchone()
-        return json.loads(row[0]) if row else {'status': 'idle', 'book_id': book_id}
+            job = json.loads(row[0]) if row else {'status': 'idle', 'book_id': book_id}
+            if job['status'] in {'cancelled', 'failed', 'interrupted'}:
+                job['resumable_units'] = BookCheckpoint(self.store, job['id']).count(db)
+                job['completed_units'] = max(job['completed_units'], job['resumable_units'])
+        return job
 
     def start(self, book_id):
+        return self._start(book_id)
+
+    def resume(self, job_id):
+        with self.lock, self.store.connect() as db:
+            row = db.execute('SELECT book_id FROM book_text_jobs WHERE id=?',
+                             (job_id,)).fetchone()
+            if row is None:
+                raise ValueError('未找到该解析任务。')
+            book_id = row[0]
+            latest = self.status(book_id)
+            if latest.get('resumed_from') == job_id and latest['status'] in ACTIVE:
+                return latest
+            if latest.get('id') != job_id or not latest.get('resumable_units'):
+                raise ValueError('该任务没有可恢复的最新断点，请重新解析。')
+            return self._start(book_id, job_id)
+
+    def _start(self, book_id, resume_id=None):
         self.library.books.get(book_id)
         with self.lock:
             if self.closed:
@@ -60,6 +83,11 @@ class BookTextJobs:
                    'started_at': now(), 'completed_units': 0, 'parse_id': None,
                    'error': None, 'finished_at': None}
             with self.store.connect() as db:
+                if resume_id:
+                    checkpoint = BookCheckpoint(self.store, resume_id)
+                    checkpoint.clone_to(job['id'], db)
+                    job['completed_units'] = checkpoint.count(db)
+                    job['resumed_from'] = resume_id
                 self._save(job, db)
             self.current = job
             self.thread = threading.Thread(target=self._run, args=(job,), daemon=True)
@@ -91,14 +119,15 @@ class BookTextJobs:
         with self.lock:
             if job['status'] == 'cancelling' or self.closed:
                 raise BookParseCancelled('解析已取消。')
-            job['completed_units'] = completed
+            job['completed_units'] = max(job['completed_units'], completed)
             with self.store.connect() as db:
                 self._save(job, db)
 
     def _run(self, job):
         try:
+            checkpoint = BookCheckpoint(self.store, job['id'])
             document = self.library.parse(
-                job['book_id'], persist=False,
+                job['book_id'], persist=False, checkpoint=checkpoint,
                 progress=lambda completed: self._progress(job, completed))
             with self.lock:
                 if job['status'] == 'cancelling' or self.closed:
@@ -110,6 +139,7 @@ class BookTextJobs:
                 with self.store.connect() as db:
                     self.library.publish(document, db)
                     self._save(completed, db)
+                    checkpoint.delete(db)
                 job.update(completed)
         except Exception as error:
             with self.lock:

@@ -43,7 +43,7 @@ def _xml(archive, name):
     return ET.fromstring(content, parser=ET.XMLParser(target=_BookXML()))
 
 
-def _epub_units(path):
+def _epub_units(path, start_after=0):
     with zipfile.ZipFile(path) as archive:
         root = _xml(archive, 'META-INF/container.xml')
         package = root.find('.//{*}rootfile')
@@ -53,7 +53,7 @@ def _epub_units(path):
         document = _xml(archive, package_path)
         manifest = {item.attrib['id']: item for item in document.findall('./{*}manifest/{*}item')}
         spine = document.findall('./{*}spine/{*}itemref')
-        if not spine or len(spine) > MAX_UNITS:
+        if not spine or len(spine) > MAX_UNITS or start_after > len(spine):
             raise ValueError('EPUB 阅读顺序缺失或过大。')
         for ordinal, ref in enumerate(spine, 1):
             item = manifest[ref.attrib['idref']]
@@ -66,6 +66,8 @@ def _epub_units(path):
                 posixpath.dirname(package_path), unquote(href.path)))
             if member.startswith(('../', '/')) or '\\' in member:
                 raise ValueError('EPUB 章节路径无效。')
+            if ordinal <= start_after:
+                continue
             chapter = _xml(archive, member)
             # Never execute or render markup, scripts, styles, or embedded content.
             for parent in chapter.iter():
@@ -88,7 +90,7 @@ class BookTextLibrary:
             db.execute('''CREATE TABLE IF NOT EXISTS book_parses (
                 parse_id TEXT PRIMARY KEY, book_id TEXT NOT NULL, document TEXT NOT NULL)''')
 
-    def parse(self, book_id, *, progress=None, persist=True):
+    def parse(self, book_id, *, progress=None, persist=True, checkpoint=None):
         # Background callers may stage extraction without publishing a version.
         # Cancellation is cooperative at these boundaries, never partial success.
         if progress:
@@ -117,18 +119,38 @@ class BookTextLibrary:
                     raise ValueError('暂不支持加密 PDF。')
                 if len(reader.pages) > MAX_UNITS:
                     raise ValueError('PDF 页数超过本地解析上限。')
+                extracted = checkpoint.load(book_id, book['sha256'], parser) if checkpoint else []
+                if len(extracted) > len(reader.pages):
+                    raise ValueError('Checkpoint exceeds PDF page count')
+                start_after = len(extracted)
                 units = ({'kind': 'pdf_file_page', 'ordinal': number, 'printed_page': None,
                           'text': page.extract_text() or ''}
-                         for number, page in enumerate(reader.pages, 1))
+                         for number, page in enumerate(reader.pages, 1) if number > start_after)
             else:
-                units = _epub_units(snapshot)
-            extracted, size = [], 0
+                extracted = checkpoint.load(book_id, book['sha256'], parser) if checkpoint else []
+                units = (_epub_units(snapshot, len(extracted)) if extracted
+                         else _epub_units(snapshot))
+            size = 0
+            for ordinal, unit in enumerate(extracted, 1):
+                expected_kind = 'pdf_file_page' if book['format'] == 'pdf' else 'epub_spine'
+                if (unit.get('kind') != expected_kind or unit.get('ordinal') != ordinal
+                        or not isinstance(unit.get('text'), str)
+                        or unit.get('printed_page') is not None
+                        or unit.get('status') != ('text_extracted' if unit['text'] else 'no_text')):
+                    raise ValueError('Invalid extraction checkpoint unit')
+                size += len(unit['text'].encode('utf-8'))
+            if len(extracted) > MAX_UNITS or size > MAX_TEXT:
+                raise ValueError('Extraction checkpoint exceeds local limits')
+            if progress and extracted:
+                progress(len(extracted))
             for unit in units:
                 size += len(unit['text'].encode('utf-8'))
                 if size > MAX_TEXT:
                     raise ValueError('提取文本超过本地解析上限。')
                 unit['text'] = unit['text'].strip()
                 unit['status'] = 'text_extracted' if unit['text'] else 'no_text'
+                if checkpoint:
+                    checkpoint.append(unit)
                 extracted.append(unit)
                 if progress:
                     progress(len(extracted))
