@@ -51,6 +51,7 @@
         if(row.strategy_id!==doc.strategy_id||row.version!==doc.version)throw new Error('快照不属于当前策略版本');
         state.selected=row;
       });});
+      window.StockSeekTiming?.mount(panel,doc,state.selected,api);
     }
     async function run(action) {
       if(state.busy)return;
