@@ -239,6 +239,22 @@ class DesktopAPI:
         from tradingagents.desktop.strategy_runs import StrategyRunRegistry
         return StrategyRunRegistry(self._store).list_runs(strategy_id, version)
 
+    @response
+    def check_strategy_conditions(self, strategy_id, version, as_of, data):
+        from tradingagents.desktop.strategy_checks import StrategyCheckRegistry
+        return StrategyCheckRegistry(self._store).check(
+            strategy_id, version, as_of=as_of, data=data)
+
+    @response
+    def get_strategy_check(self, check_id):
+        from tradingagents.desktop.strategy_checks import StrategyCheckRegistry
+        return StrategyCheckRegistry(self._store).get(check_id)
+
+    @response
+    def strategy_check_history(self, strategy_id, version):
+        from tradingagents.desktop.strategy_checks import StrategyCheckRegistry
+        return StrategyCheckRegistry(self._store).history(strategy_id, version)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library

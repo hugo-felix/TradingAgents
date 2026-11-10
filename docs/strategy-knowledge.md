@@ -89,6 +89,10 @@ PDF 位置是从 1 开始的**文件页序号**，印刷页为未知；EPUB 位�
 
 所有记录固定标为 `external_unverified`。登记只验证结构，不执行代码、不复制或核验所声明的数据/代码文件，也不检查实现是否符合规则、数据是否存在未来泄漏、指标计算是否正确。参数与定义之间的语义一致性仍需核对。即使 `outcome=completed`，策略的实现状态仍为 `not_implemented`，回测及样本外状态仍为 `not_evaluated`；失败、取消和不确定记录也不能当作验证通过。完整验证状态提升与可复现运行器尚未实现。
 
+## 已确认策略的离线条件检查
+
+已增加独立的逐条条件计算服务与桌面桥接接口：`check_strategy_conditions(strategy_id, version, as_of, data)`、`get_strategy_check(check_id)`、`strategy_check_history(strategy_id, version)`。只计算已确认版本内的明确比较表达式，保留完整输入和历史可得时间选择证据；人工、缺失、规则无效和未实现分别显示。计算不提升实现或验证状态，不生成交易指令。表达式、数据契约及尚未实现范围见 [条件检查说明](strategy-conditions.md)；当前没有页面入口或供应商数据自动接入。
+
 ## 备份范围和限制
 
 关闭工作空间应用后，将整个工作空间目录作为一组备份和恢复，至少同时保留 SQLite 数据库与 `books/originals/`。只复制数据库会丢失原文。跨平台恢复和备份工具的自动化验收尚未完成，不能据此标记 D07 完成。
