@@ -84,12 +84,12 @@ def main():
         page.locator('[data-action="strategy-version"][data-version="2"]').click()
         panel.locator('[name="as_of"]').fill('2020-01-02T16:00:00+08:00')
         panel.locator('[name="data"]').fill('{invalid')
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="alert"]:has-text("有效 JSON")').wait_for()
         assert panel.locator('[name="data"]').input_value() == '{invalid'
         assert api.strategy_check_history(first['strategy_id'], 2)['data'] == []
         panel.locator('[name="data"]').fill(json.dumps(data, ensure_ascii=False))
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         result = panel.locator('[aria-label="条件检查快照"]')
         result.locator('h4:has-text("SYNTHETIC")').wait_for()
         for status in ('满足', '未满足', '需人工判断', '数据不足', '数据已过期',
@@ -109,7 +109,7 @@ def main():
         rows = api.strategy_check_history(first['strategy_id'], 2)['data']
         assert len(rows) == 1
         check_id = rows[0]['check_id']
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="status"]').wait_for(state='detached')
         assert len(api.strategy_check_history(first['strategy_id'], 2)['data']) == 1
         # Re-rendering the main view while a check is pending must release its busy state.
@@ -119,15 +119,15 @@ def main():
             window.releaseCheck=async()=>resolve(await original(...args));
           });
         }""")
-        panel.locator('[type="submit"]').click()
+        panel.locator(':scope > form [type="submit"]').click()
         panel.locator('[role="status"]').wait_for()
         page.locator('[data-action="strategy-version"][data-version="4"]').click()
         assert '尚未选择检查快照' in panel.inner_text()
         page.locator('[data-action="strategy-version"][data-version="2"]').click()
-        assert panel.locator('[type="submit"]').is_disabled()
+        assert panel.locator(':scope > form [type="submit"]').is_disabled()
         page.evaluate('window.releaseCheck()')
         panel.locator('[role="status"]').wait_for(state='detached')
-        assert panel.locator('[type="submit"]').is_enabled()
+        assert panel.locator(':scope > form [type="submit"]').is_enabled()
         # A failed historical read keeps the current result and supports retry.
         page.evaluate("""() => {
           const original=window.pywebview.api.strategy_check_history;

@@ -1,0 +1,4 @@
+[aria-label="策略独立对照"] { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 16px; }
+.strategy-comparison-entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.strategy-comparison-entries > article { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+@media (max-width: 1000px) { .strategy-comparison-entries { grid-template-columns: minmax(0, 1fr); } }

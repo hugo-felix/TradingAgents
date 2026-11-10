@@ -272,6 +272,27 @@ class DesktopAPI:
         return StrategyCheckRegistry(self._store).history(strategy_id, version)
 
     @response
+    def preview_strategy_comparison(self, left_id, right_id):
+        from tradingagents.desktop.strategy_comparisons import StrategyComparisonRegistry
+        return StrategyComparisonRegistry(self._store).preview(left_id, right_id)
+
+    @response
+    def save_strategy_comparison(self, left_id, right_id, verdict, note, assessed_by):
+        from tradingagents.desktop.strategy_comparisons import StrategyComparisonRegistry
+        return StrategyComparisonRegistry(self._store).save(
+            left_id, right_id, verdict, note, assessed_by)
+
+    @response
+    def get_strategy_comparison(self, comparison_id):
+        from tradingagents.desktop.strategy_comparisons import StrategyComparisonRegistry
+        return StrategyComparisonRegistry(self._store).get(comparison_id)
+
+    @response
+    def strategy_comparison_history(self, check_id):
+        from tradingagents.desktop.strategy_comparisons import StrategyComparisonRegistry
+        return StrategyComparisonRegistry(self._store).history(check_id)
+
+    @response
     def assess_strategy_timing(self, check_id, evidence):
         from tradingagents.desktop.strategy_timing import StrategyTimingRegistry
         return StrategyTimingRegistry(self._store).assess(check_id, evidence)

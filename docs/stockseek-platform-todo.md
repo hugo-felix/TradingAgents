@@ -57,6 +57,12 @@
 | R03 原子更正 | Codex / 当前 Windows 工作区 | main（第十九批） | 新事件、原事件作废与更正链一次提交，失败全部回滚；支持幂等重试和逐条追溯 |
 | R05/R08 桌面个人复盘 | Codex / 当前 Windows 工作区 | main（第二十三批） | 实际成交选择、分维度评估、不可变历史及个人规则草案；真实 API 离线浏览器验收，不提供自动评价或收益归因 |
 
+### 2026-11-10 第三十批实施说明
+
+- S09 策略独立对照与人工分歧留存由 Codex / 当前 Windows 工作区在 `main` 认领实施；开工核对本地与远端均为 `acac368`，保留已有未提交修改。
+- 实施范围为两项不可变条件检查的独立证据对照、上下文差异提示、具名人工冲突判断与追加历史。不平均评分，不自动推断规则语义冲突，不修改持仓、策略或验证状态；S09 整项保持未完成。
+- 文档及验收：`docs/strategy-comparisons.md`、`tests/test_desktop_strategy_comparisons.py`、`desktop/strategy_comparisons_smoke.py`。验证：相关测试 119 passed；默认全套 2686 passed、7 skipped、1 deselected（另 100 subtests passed）；本批 Python Ruff 与 `git diff --check` 通过；策略对照、条件检查、时序审计及桌面整体 Chrome 离线验收通过。全仓 Ruff 仍有已有未提交 `valuation.py:93` B905；未运行 integration、原生验收或打包。
+
 ### 2026-11-10 第二十九批实施说明
 
 - S03 时序契约桌面编辑入口由 Codex / 当前 Windows 工作区在 `main` 认领实施；开工核对本地与远端均为 `884ce8c`，保留原有未提交修改。

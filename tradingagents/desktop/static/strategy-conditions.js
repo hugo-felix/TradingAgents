@@ -16,7 +16,7 @@
     if (!row) return '<p>尚未选择检查快照。</p>';
     return `<section aria-label="条件检查快照"><h4>${escape(row.data.symbol)} · v${row.version} · 截止 ${escape(row.as_of)}</h4><p>数据来源：${escape(row.data.source)} · 修订：${escape(row.data.revision)} · 价格口径：${escape(row.data.price_basis)}</p><p>调用者提供，来源和可得时间未经独立核验。逐条条件满足不代表整体策略通过、有效或可成交。</p><p>检查标识：${escape(row.check_id)}</p>${row.conditions.map(c => `<article><h4>${escape(groups[c.group] || c.group)} ${c.index + 1} · ${escape(statuses[c.status] || c.status)}</h4><p>${escape(c.rule.text)}</p><p>规则出处：${escape(c.rule.citation)}</p>${c.reason ? `<p>${escape(c.reason)}</p>` : `<p>${escape(c.left.value)} ${escape(c.left.unit)} ${escape(operators[c.op] || c.op)} ${escape(c.right.value)} ${escape(c.right.unit)}</p>`}${evidence(c.left,row.data,'左侧计算值及采用的观测')}${evidence(c.right,row.data,'右侧计算值及采用的观测')}</article>`).join('')}<details><summary>限制与完整不可变快照</summary><ul>${row.limitations.map(item=>`<li>${escape(item)}</li>`).join('')}</ul><pre>${json(row)}</pre></details></section>`;
   }
-  window.StockSeekConditions = {mount(container, doc, api) {
+  window.StockSeekConditions = {snapshot, mount(container, doc, api) {
     if (!doc) return;
     const parent = container.querySelector('[aria-label="策略版本详情"]');
     if (!parent) return;
@@ -53,6 +53,7 @@
         state.selected=row;
       });});
       window.StockSeekTiming?.mount(panel,doc,state.selected,api);
+      window.StockSeekComparisons?.mount(panel,doc,state.selected,api);
     }
     async function run(action) {
       if(state.busy)return;
