@@ -322,6 +322,11 @@ class DesktopAPI:
         return AccountEventLedger(self._store).get(record_id)
 
     @response
+    def void_account_event(self, record_id, request_id, reason, recorded_by):
+        from tradingagents.desktop.account_events import AccountEventLedger
+        return AccountEventLedger(self._store).void(record_id, request_id, reason, recorded_by)
+
+    @response
     def list_account_events(self, broker=None, account_ref=None, kind=None, limit=100, offset=0):
         from tradingagents.desktop.account_events import AccountEventLedger
         return AccountEventLedger(self._store).list(

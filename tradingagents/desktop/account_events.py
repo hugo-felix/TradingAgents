@@ -61,6 +61,42 @@ class AccountEventLedger:
                 record_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL,
                 broker TEXT NOT NULL, account_ref TEXT NOT NULL, ticker TEXT,
                 document TEXT NOT NULL)''')
+            db.execute('''CREATE TABLE IF NOT EXISTS account_event_voids (
+                record_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE,
+                fingerprint TEXT NOT NULL, document TEXT NOT NULL)''')
+
+    @staticmethod
+    def _view(db, document):
+        row = db.execute('SELECT document FROM account_event_voids WHERE record_id=?',
+                         (document['record_id'],)).fetchone()
+        return {**document, 'ledger_status': 'voided' if row else 'recorded',
+                'void': json.loads(row[0]) if row else None}
+
+    def void(self, record_id, request_id, reason, recorded_by):
+        fields = {key: _text(value, key) for key, value in {
+            'record_id': record_id, 'request_id': request_id,
+            'reason': reason, 'recorded_by': recorded_by}.items()}
+        fingerprint = _fingerprint(fields)
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            previous = db.execute('SELECT fingerprint, document FROM account_event_voids '
+                                  'WHERE request_id=?', (fields['request_id'],)).fetchone()
+            if previous:
+                if previous['fingerprint'] != fingerprint:
+                    raise ValueError('作废请求标识已有不同内容；不能覆盖作废历史。')
+                return {**json.loads(previous['document']), 'already_recorded': True}
+            if not db.execute('SELECT 1 FROM account_events WHERE record_id=?',
+                              (fields['record_id'],)).fetchone():
+                raise ValueError('未找到账户事件。')
+            if db.execute('SELECT 1 FROM account_event_voids WHERE record_id=?',
+                          (fields['record_id'],)).fetchone():
+                raise ValueError('事件已作废；不能重复作废或覆盖原因。')
+            document = {**fields, 'recorded_at': now(), 'fingerprint': fingerprint,
+                        'verification': 'caller_declared_unverified', 'effects': 'not_applied'}
+            db.execute('INSERT INTO account_event_voids VALUES (?, ?, ?, ?)',
+                       (fields['record_id'], fields['request_id'], fingerprint,
+                        json.dumps(document, ensure_ascii=False)))
+        return {**document, 'already_recorded': False}
 
     def record(self, kind, payload):
         normalized = normalize(kind, payload)
@@ -76,7 +112,7 @@ class AccountEventLedger:
             if previous:
                 if previous['fingerprint'] != fingerprint:
                     raise ValueError('同一券商账户事件标识已有不同内容；不能覆盖历史事件。')
-                return {**json.loads(previous['document']), 'already_recorded': True}
+                return {**self._view(db, json.loads(previous['document'])), 'already_recorded': True}
             document = {'record_id': record_id, 'kind': kind, 'recorded_at': now(),
                         'payload': normalized, 'raw': raw, 'fingerprint': fingerprint,
                         'verification': 'caller_declared_unverified',
@@ -86,16 +122,18 @@ class AccountEventLedger:
                        (record_id, fingerprint, kind, normalized['broker'],
                         normalized['account_ref'], normalized.get('ticker'),
                         json.dumps(document, ensure_ascii=False)))
-        return {**document, 'already_recorded': False}
+            result = self._view(db, document)
+        return {**result, 'already_recorded': False}
 
     def get(self, record_id):
         record_id = _text(record_id, 'record_id')
         with self.store.connect() as db:
+            db.execute('BEGIN')
             row = db.execute('SELECT document FROM account_events WHERE record_id=?',
                              (record_id,)).fetchone()
-        if not row:
-            raise ValueError('未找到账户事件。')
-        return json.loads(row[0])
+            if not row:
+                raise ValueError('未找到账户事件。')
+            return self._view(db, json.loads(row[0]))
 
     def list(self, broker=None, account_ref=None, kind=None, *, limit=100, offset=0):
         if (type(limit) is not int or not 1 <= limit <= 1000
@@ -114,7 +152,8 @@ class AccountEventLedger:
             rows = db.execute('SELECT document FROM account_events' + where
                               + ' ORDER BY rowid DESC LIMIT ? OFFSET ?',
                               (*params, limit, offset)).fetchall()
-        return {'total': total, 'items': [json.loads(row[0]) for row in rows],
+            items = [self._view(db, json.loads(row[0])) for row in rows]
+        return {'total': total, 'items': items,
                 'account_completeness': 'not_established', 'performance': 'not_evaluated'}
 
 
@@ -129,6 +168,8 @@ def main(argv=None):
     record = sub.add_parser('record')
     record.add_argument('kind', choices=KINDS)
     record.add_argument('json', type=Path)
+    void = sub.add_parser('void')
+    void.add_argument('json', type=Path)
     get = sub.add_parser('get')
     get.add_argument('record_id')
     listing = sub.add_parser('list')
@@ -145,12 +186,19 @@ def main(argv=None):
             raise ValueError('不能打开未完整恢复的工作空间。')
         with WorkspaceLock(args.workspace):
             ledger = AccountEventLedger(DesktopStore(args.workspace))
-            if args.action == 'record':
+            if args.action in ('record', 'void'):
                 with args.json.open('rb') as source:
                     content = source.read(65537)
                 if len(content) > 65536:
                     raise ValueError('事件 JSON 不得超过 64 KiB。')
-                result = ledger.record(args.kind, json.loads(content.decode('utf-8-sig')))
+                payload = json.loads(content.decode('utf-8-sig'))
+                if args.action == 'void':
+                    if (not isinstance(payload, dict) or set(payload) != {
+                            'record_id', 'request_id', 'reason', 'recorded_by'}):
+                        raise ValueError('作废字段必须与模板完全一致。')
+                    result = ledger.void(**payload)
+                else:
+                    result = ledger.record(args.kind, payload)
             elif args.action == 'get':
                 result = ledger.get(args.record_id)
             else:

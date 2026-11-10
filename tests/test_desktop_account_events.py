@@ -192,3 +192,126 @@ def test_cli_refuses_unknown_running_or_incomplete_workspace(tmp_path):
     (path / INCOMPLETE).touch()
     with pytest.raises(SystemExit):
         account_events.main(prefix)
+
+
+def test_void_is_append_only_and_original_retries_cannot_reactivate(tmp_path):
+    store = DesktopStore(tmp_path)
+    ledger = AccountEventLedger(store)
+    saved = ledger.record('cash_transfer', payload())
+    with store.connect() as db:
+        before = db.execute('SELECT document FROM account_events').fetchone()[0]
+    assert saved['ledger_status'] == 'recorded'
+    assert saved['void'] is None
+    voided = ledger.void(saved['record_id'], 'void-1', '误录，原凭证无此入金', '合成操作人')
+    assert voided['already_recorded'] is False
+    assert ledger.void(saved['record_id'], 'void-1', '误录，原凭证无此入金', '合成操作人') == {
+        **voided, 'already_recorded': True}
+    for result in (ledger.get(saved['record_id']), ledger.list()['items'][0],
+                   ledger.record('cash_transfer', payload())):
+        assert result['ledger_status'] == 'voided'
+        assert result['void'] == {key: value for key, value in voided.items()
+                                  if key != 'already_recorded'}
+        assert result['raw'] == saved['raw']
+        assert result['fingerprint'] == saved['fingerprint']
+        assert result['effects'] == 'not_applied'
+        assert result['performance'] == 'not_evaluated'
+    with store.connect() as db:
+        assert db.execute('SELECT document FROM account_events').fetchone()[0] == before
+        assert db.execute('SELECT COUNT(*) FROM account_event_voids').fetchone()[0] == 1
+    with pytest.raises(ValueError, match='不能覆盖'):
+        ledger.record('cash_transfer', payload(amount='200'))
+    assert ledger.list()['total'] == 1  # History includes voided entries.
+
+
+def test_void_requests_cannot_change_reason_author_target_or_be_duplicated(tmp_path):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    first = ledger.record('cash_transfer', payload())['record_id']
+    second = ledger.record('split', payload('split', event_id='split'))['record_id']
+    ledger.void(first, 'request', '误录', '合成操作人')
+    for target, request, reason, author in (
+            (first, 'request', '改口', '合成操作人'), (first, 'request', '误录', '另一个人'),
+            (second, 'request', '误录', '合成操作人'), (first, 'new-request', '误录', '合成操作人')):
+        with pytest.raises(ValueError):
+            ledger.void(target, request, reason, author)
+    with pytest.raises(ValueError, match='未找到'):
+        ledger.void('unknown', 'missing-request', '误录', '合成操作人')
+    assert ledger.get(second)['ledger_status'] == 'recorded'
+    # A failed request did not reserve its identity or create partial data.
+    ledger.void(second, 'missing-request', '误录', '合成操作人')
+    assert ledger.get(second)['ledger_status'] == 'voided'
+
+
+@pytest.mark.parametrize(('field', 'value'), [
+    ('record_id', ''), ('record_id', None), ('request_id', True), ('request_id', 'x' * 201),
+    ('reason', ''), ('reason', 'bad\nreason'), ('reason', []), ('recorded_by', ''),
+    ('recorded_by', 123),
+])
+def test_invalid_void_does_not_append(tmp_path, field, value):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    saved = ledger.record('cash_transfer', payload())
+    fields = {'record_id': saved['record_id'], 'request_id': 'void-1', 'reason': '误录',
+              'recorded_by': '合成操作人'}
+    fields[field] = value
+    with pytest.raises(ValueError):
+        ledger.void(**fields)
+    assert ledger.get(saved['record_id'])['ledger_status'] == 'recorded'
+
+
+def test_concurrent_void_conflicts_are_atomic(tmp_path):
+    ledger = AccountEventLedger(DesktopStore(tmp_path))
+    first = ledger.record('cash_transfer', payload())['record_id']
+    second = ledger.record('split', payload('split', event_id='split'))['record_id']
+
+    def attempt(target, request, reason):
+        try:
+            return ledger.void(target, request, reason, '合成操作人')
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda target: attempt(target, 'shared', '误录'), [first, second]))
+    assert sum(item is not None for item in results) == 1
+    assert sum(ledger.get(target)['ledger_status'] == 'voided' for target in (first, second)) == 1
+    winner = next(item for item in results if item is not None)
+    with ThreadPoolExecutor(2) as pool:
+        retries = list(pool.map(lambda _: attempt(winner['record_id'], 'shared', '误录'), range(2)))
+    assert all(item['already_recorded'] for item in retries)
+    remaining = second if winner['record_id'] == first else first
+    with ThreadPoolExecutor(2) as pool:
+        conflicts = list(pool.map(lambda request: attempt(remaining, request, '误录'), ['a', 'b']))
+    assert sum(item is not None for item in conflicts) == 1
+
+
+def test_void_cli_api_backup_and_old_schema(tmp_path, capsys):
+    from tradingagents.desktop.backup import create_backup, restore_backup
+
+    store = DesktopStore(tmp_path / 'workspace')
+    ledger = AccountEventLedger(store)
+    saved = ledger.record('cash_transfer', payload())
+    # An older workspace gains the additive table without changing its event document.
+    with store.connect() as db:
+        db.execute('DROP TABLE account_event_voids')
+    ledger = AccountEventLedger(store)
+    assert ledger.get(saved['record_id'])['ledger_status'] == 'recorded'
+    path = tmp_path / 'void.json'
+    fields = {'record_id': saved['record_id'], 'request_id': 'void-1', 'reason': '误录',
+              'recorded_by': '合成操作人'}
+    path.write_text(json.dumps(fields), encoding='utf-8-sig')
+    prefix = ['--workspace', str(store.directory)]
+    account_events.main([*prefix, 'void', str(path)])
+    result = json.loads(capsys.readouterr().out)
+    api = DesktopAPI(store)
+    assert api.void_account_event(**fields)['data'] == {**result, 'already_recorded': True}
+    assert not api.void_account_event(**{**fields, 'reason': '修改'})['ok']
+    assert api.get_account_event(saved['record_id'])['data']['ledger_status'] == 'voided'
+    for content in ('{}', '[]', '{', '0' * 65537):
+        path.write_text(content, encoding='utf-8')
+        with pytest.raises(SystemExit) as caught:
+            account_events.main([*prefix, 'void', str(path)])
+        assert caught.value.code == 1
+    archive = tmp_path / 'backup.zip'
+    create_backup(store.directory, archive)
+    restore_backup(archive, tmp_path / 'restored')
+    restored = AccountEventLedger(DesktopStore(tmp_path / 'restored'))
+    assert restored.list() == ledger.list()
+    assert restored.void(**fields)['already_recorded']

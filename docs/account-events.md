@@ -9,6 +9,7 @@ R03 的前置记录能力：调用者明确登记入出金、现金分红和拆�
 ```powershell
 .\.venv\Scripts\python.exe -m tradingagents.desktop.account_events --workspace <工作空间> record cash_transfer <事件.json>
 .\.venv\Scripts\python.exe -m tradingagents.desktop.account_events --workspace <工作空间> get <record_id>
+.\.venv\Scripts\python.exe -m tradingagents.desktop.account_events --workspace <工作空间> void <作废.json>
 .\.venv\Scripts\python.exe -m tradingagents.desktop.account_events --workspace <工作空间> list --broker <券商标识> --account-ref <账户别名> --kind cash_dividend --limit 100 --offset 0
 ```
 
@@ -51,7 +52,28 @@ R03 的前置记录能力：调用者明确登记入出金、现金分红和拆�
 }
 ```
 
-同一券商、账户及事件标识重试，规范化内容相同则返回原记录；改变类型、日期、金额或来源会报冲突，不覆盖历史。来源若只提供每天重复的流水号，调用者须先为其构造稳定且跨日期唯一的标识。存储保留原始输入、规范化数据、登记时间与内容指纹，重试不替换原始输入。目前没有更正、撤销、自动抓取或券商对账流程；不要换标识重复登记同一经济事件来绕过冲突。
+同一券商、账户及事件标识重试，规范化内容相同则返回原记录；改变类型、日期、金额或来源会报冲突，不覆盖历史。来源若只提供每天重复的流水号，调用者须先为其构造稳定且跨日期唯一的标识。存储保留原始输入、规范化数据、登记时间与内容指纹，重试不替换原始输入。没有自动抓取或券商对账流程；不要换标识重复登记同一经济事件来绕过冲突。
+
+## 错误记录作废
+
+`void` 仅作废本地误录，不向券商发送撤单、退款或其他指令。它追加原因、操作人、系统登记时间及内容指纹，保留原始事件原文；不会撤销实际经济行为或调整持仓。若真实发生了反向资金流，应按实际凭证另记事件，不能将原事件作废代替。
+
+作废 JSON 只能包含以下四个字符串字段，均必填，每项最多 200 字符：
+
+```json
+{
+  "record_id": "待作废记录的实际 record_id",
+  "request_id": "synthetic-void-request-1",
+  "reason": "合成记录误录，原始凭证没有此笔事件",
+  "recorded_by": "合成操作人"
+}
+```
+
+桌面 API 为 `void_account_event(record_id, request_id, reason, recorded_by)`。请求标识在整个工作空间唯一；相同内容重试返回原作废记录，改变目标、原因或操作人均报冲突。同一事件只能作废一次，不能恢复或覆盖作废说明。并发写入采用事务，失败不占用请求标识。
+
+登记、查询及列表返回当前 `ledger_status: recorded` 或 `voided`；`void` 字段分别为 `null` 或完整作废记录。`recorded` 仅表示尚未作废，不代表券商确认或经济有效。列表包含作废历史，总数包括作废事件，不能直接将所有记录汇总。原登记请求重试仍显示已作废，不会重新激活事件；原事件指纹保持不变，作废记录有独立指纹。系统作废时间不改变原事件发生时间，不构成历史时点已知信息。
+
+当前没有原子替换、更正链或恢复流程。需要登记正确事件时，先核实原记录作废成功，再使用新的稳定事件标识登记，并在来源说明中保留关联；两步之间可能中断，应查询核对，不能推断替换已完成。备份同时保留原事件与作废记录，旧工作空间首次使用时追加作废表。
 
 ## 绩效与完整性限制
 
