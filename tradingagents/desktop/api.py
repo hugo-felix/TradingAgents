@@ -255,6 +255,26 @@ class DesktopAPI:
         from tradingagents.desktop.strategy_checks import StrategyCheckRegistry
         return StrategyCheckRegistry(self._store).history(strategy_id, version)
 
+    @response
+    def preview_actual_trades(self, csv_text, source_label):
+        from tradingagents.desktop.trades import TradeLedger
+        return TradeLedger(self._store).preview(csv_text, source_label)
+
+    @response
+    def import_actual_trades(self, csv_text, source_label, expected_sha256):
+        from tradingagents.desktop.trades import TradeLedger
+        return TradeLedger(self._store).import_csv(csv_text, source_label, expected_sha256)
+
+    @response
+    def get_trade_import(self, batch_id):
+        from tradingagents.desktop.trades import TradeLedger
+        return TradeLedger(self._store).get_import(batch_id)
+
+    @response
+    def list_actual_trades(self, ticker=None, limit=100, offset=0):
+        from tradingagents.desktop.trades import TradeLedger
+        return TradeLedger(self._store).list_fills(ticker, limit=limit, offset=offset)
+
     def __init__(self, store: DesktopStore, library=None):
         self._store = store
         self._library = library
