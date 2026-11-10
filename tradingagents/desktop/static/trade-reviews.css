@@ -1,0 +1,8 @@
+[data-trade-reviews] { min-width: 0; }
+[data-trade-reviews] section, [data-trade-reviews] form { margin: 20px 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; min-width: 0; }
+[data-trade-reviews] label { display: grid; gap: 8px; margin-bottom: 16px; }
+[data-trade-reviews] button { margin: 4px; max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+[data-trade-reviews] p, [data-trade-reviews] h2, [data-trade-reviews] dd { overflow-wrap: anywhere; }
+[data-trade-reviews] pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 420px; overflow: auto; }
+[data-trade-reviews] textarea { min-height: 100px; }
+[data-trade-reviews] input, [data-trade-reviews] textarea, [data-trade-reviews] select { width: 100%; min-width: 0; }

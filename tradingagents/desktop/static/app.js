@@ -2,7 +2,7 @@
 (() => {
   const $ = (selector) => document.querySelector(selector);
   const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const labels = {dividends:'高股息',today:'今日关注',research:'股票研究',holdings:'持仓管理',history:'历史记录',stock:'股票档案',analysis:'分析任务',settings:'应用设置'};
+  const labels = {reviews:'成交复盘',dividends:'高股息',today:'今日关注',research:'股票研究',holdings:'持仓管理',history:'历史记录',stock:'股票档案',analysis:'分析任务',settings:'应用设置'};
   const ratings = {Buy:'买入',Overweight:'增配',Hold:'持有',Underweight:'减配',Sell:'卖出',REVIEW:'需复核'};
   const actions = {observe:'继续观察',review:'安排重新研究',change:'调整个人计划'};
   const tabs = {summary:'研究摘要',evidence:'事实与依据',judgment:'我的判断',full:'完整报告'};
@@ -48,9 +48,13 @@
     // Condition evidence is isolated from the definition editor and its drafts.
     $('#page-label').textContent=labels[state.page];$('#back').hidden=state.stack.length===0;
     document.querySelectorAll('.sidebar [data-page]').forEach(b=>{if(b.dataset.page===state.page||(state.page==='stock'&&b.dataset.page==='research'))b.setAttribute('aria-current','page');else b.removeAttribute('aria-current');});
-    const views={strategies:strategies,books:books,dividends:dividends,today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
+    const views={reviews:()=>'<div data-trade-reviews></div>',strategies:strategies,books:books,dividends:dividends,today:today,research:research,holdings:holdings,history:history,stock:stock,analysis:analysis,settings:settings};
     window.StockSeekControls?.close();$('#content').innerHTML=views[state.page]();restoreDrafts();window.StockSeekControls?.enhance($('#content'));document.querySelectorAll('form').forEach(form=>form.noValidate=true);const stockInput=$('#analysis-form [name="ticker"]');if(stockInput?.value)resolveStockField(stockInput);renderTask();if(state.page==='today'){fitPreview();const scroller=$('#preview-scroll');if(scroller)scroller.scrollTop=state.previewScroll||0;ensurePreview();}
     if(state.page==='strategies')window.StockSeekConditions?.mount($('#content'),state.strategySelected,api);
+    if(state.page==='reviews')window.StockSeekReviews?.mount($('#content'),api,async id=>{
+      const history=await api('strategy_history',id);
+      go('strategies');state.strategyRead=null;state.strategyHistory=history;state.strategySelected=history[0];render();
+    });
   }
   const bookFields={title:'书名',author:'作者',translator:'译者（无译者请填“无”）',language:'语言',edition:'版次 / 版本',source:'文件来源',usage_scope:'使用范围'};
   labels.books='书籍资料';

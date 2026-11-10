@@ -65,7 +65,7 @@ with tempfile.TemporaryDirectory() as directory, sync_playwright() as playwright
     page.wait_for_selector('[data-inspect]')
     page.wait_for_selector('[data-angle="market"] .preview-point')
     assert [text.strip() for text in page.locator('.sidebar nav button').all_text_contents()] == [
-        '今日关注', '股票研究', '高股息', '持仓管理', '历史记录', '书籍资料', '策略管理']
+        '今日关注', '股票研究', '高股息', '持仓管理', '历史记录', '成交复盘', '书籍资料', '策略管理']
     assert page.locator('[data-angle="sentiment"] .angle-status').inner_text() == '数据不足'
     assert page.locator('.brand-mark img').evaluate('(image) => image.complete && image.naturalWidth > 0'), 'Brand image failed to load'
     execution=page.locator('[data-plan-field="execution"]')
