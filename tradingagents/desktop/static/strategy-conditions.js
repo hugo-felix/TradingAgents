@@ -2,13 +2,15 @@
 (() => {
   const cache = new Map();
   const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const statuses = {met:'满足',not_met:'未满足',manual:'需人工判断',insufficient_data:'数据不足',not_implemented:'未实现',invalid_rule:'定义校验失败'};
+  const statuses = {met:'满足',not_met:'未满足',manual:'需人工判断',insufficient_data:'数据不足',stale_data:'数据已过期',not_implemented:'未实现',invalid_rule:'定义校验失败'};
   const groups = {entry:'入场',filters:'过滤',exit:'退出',invalidation:'失效',position:'仓位',portfolio:'组合',exceptions:'例外'};
   const operators = {gt:'>',ge:'≥',lt:'<',le:'≤',eq:'='};
   const json = value => escape(JSON.stringify(value, null, 2));
   function evidence(operand, data, label) {
     if (!operand) return '';
-    return `<details><summary>${label}：${escape(operand.value)} ${escape(operand.unit)}</summary><p>来源：${escape(operand.source || data.source)} · 修订：${escape(data.revision)} · 价格口径：${escape(data.price_basis)}</p><pre>${json(operand)}</pre></details>`;
+    const freshness = operand.freshness;
+    const age = freshness ? `<p>观测新鲜度：${freshness.status==='not_evaluated'?'未评估（规则未配置阈值）':freshness.status==='stale'?'数据已过期':'在所设年龄范围内'} · 最新观测：${escape(freshness.latest_observed_at)} · 年龄：${escape(freshness.age_seconds)} 秒${freshness.max_age_seconds===null?'':` · 上限：${escape(freshness.max_age_seconds)} 秒`}</p>` : '';
+    return `${age}<details><summary>${label}：${escape(operand.value)} ${escape(operand.unit)}</summary><p>来源：${escape(operand.source || data.source)} · 修订：${escape(data.revision)} · 价格口径：${escape(data.price_basis)}</p><pre>${json(operand)}</pre></details>`;
   }
   function snapshot(row) {
     if (!row) return '<p>尚未选择检查快照。</p>';
@@ -26,7 +28,7 @@
     parent.append(panel);
     function render() {
       if (!panel.isConnected) return;
-      panel.innerHTML = `<h3>v${doc.version} 的条件核对</h3><p>离线数据检查；不自动请求行情或模型，不产生交易。时序、环境、过期与成交限制需另行核对；当前没有自动失效判定。</p>${doc.status === 'confirmed' ? `<form class="condition-form"><label>检查截止时刻（包含时区）<input name="as_of" placeholder="2026-11-10T15:10:00+08:00" value="${escape(state.asOf)}" required></label><label>粘贴离线数据快照（JSON）<textarea name="data" required spellcheck="false">${escape(state.input)}</textarea></label><p>数据须声明证券、市场、周期、价格口径、来源、修订和观测可得时间。格式见 docs/strategy-conditions.md；不会自动补值或生成缺失规则。</p><button type="submit" ${state.busy?'disabled':''}>保存并核对本版本条件</button></form>` : '<p>草稿尚未确认，不能执行条件检查；可查询此版本历史。</p>'}<button type="button" data-condition-action="history" ${state.busy?'disabled':''}>读取 / 刷新本版本检查历史</button>${state.busy?'<p role="status">正在核对 / 读取…</p>':''}${state.error?`<p role="alert">${escape(state.error)}；输入与已有快照已保留，可重试。</p>`:''}<div class="condition-history">${state.history === null?'<p>尚未读取历史。</p>':state.history.length?state.history.map(row=>`<button type="button" data-check-id="${escape(row.check_id)}" ${state.busy||state.selected?.check_id===row.check_id?'disabled':''}>${escape(row.as_of)} · ${escape(row.check_id.slice(0,12))}</button>`).join(''):'<p>本版本尚无检查记录。</p>'}</div>${snapshot(state.selected)}`;
+      panel.innerHTML = `<h3>v${doc.version} 的条件核对</h3><p>离线数据检查；不自动请求行情或模型，不产生交易。过期仅按规则显式配置的最大观测年龄判断，未配置时新鲜度未评估。时序、环境与成交限制需另行核对，不自动使策略失效。</p>${doc.status === 'confirmed' ? `<form class="condition-form"><label>检查截止时刻（包含时区）<input name="as_of" placeholder="2026-11-10T15:10:00+08:00" value="${escape(state.asOf)}" required></label><label>粘贴离线数据快照（JSON）<textarea name="data" required spellcheck="false">${escape(state.input)}</textarea></label><p>数据须声明证券、市场、周期、价格口径、来源、修订和观测可得时间。格式见 docs/strategy-conditions.md；不会自动补值或生成缺失规则。</p><button type="submit" ${state.busy?'disabled':''}>保存并核对本版本条件</button></form>` : '<p>草稿尚未确认，不能执行条件检查；可查询此版本历史。</p>'}<button type="button" data-condition-action="history" ${state.busy?'disabled':''}>读取 / 刷新本版本检查历史</button>${state.busy?'<p role="status">正在核对 / 读取…</p>':''}${state.error?`<p role="alert">${escape(state.error)}；输入与已有快照已保留，可重试。</p>`:''}<div class="condition-history">${state.history === null?'<p>尚未读取历史。</p>':state.history.length?state.history.map(row=>`<button type="button" data-check-id="${escape(row.check_id)}" ${state.busy||state.selected?.check_id===row.check_id?'disabled':''}>${escape(row.as_of)} · ${escape(row.check_id.slice(0,12))}</button>`).join(''):'<p>本版本尚无检查记录。</p>'}</div>${snapshot(state.selected)}`;
       const form = panel.querySelector('form');
       if (form) {
         form.addEventListener('input', () => {state.asOf=form.elements.as_of.value;state.input=form.elements.data.value;});

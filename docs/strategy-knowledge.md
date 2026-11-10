@@ -97,7 +97,7 @@ PDF 位置是从 1 开始的**文件页序号**，印刷页为未知；EPUB 位�
 
 ## 已确认策略的离线条件检查
 
-已增加独立的逐条条件计算服务与桌面桥接接口：`check_strategy_conditions(strategy_id, version, as_of, data)`、`get_strategy_check(check_id)`、`strategy_check_history(strategy_id, version)`。只计算已确认版本内的明确比较表达式，保留完整输入和历史可得时间选择证据；人工、缺失、规则无效和未实现分别显示。计算不提升实现或验证状态，不生成交易指令。表达式、数据契约及尚未实现范围见 [条件检查说明](strategy-conditions.md)；当前没有页面入口或供应商数据自动接入。
+已增加独立的逐条条件计算服务与桌面桥接接口：`check_strategy_conditions(strategy_id, version, as_of, data)`、`get_strategy_check(check_id)`、`strategy_check_history(strategy_id, version)`。只计算已确认版本内的明确比较表达式，保留完整输入和历史可得时间选择证据；人工、缺失、过期、规则无效和未实现分别显示。策略详情中的条件核对面板支持粘贴离线数据和读取历史；指标可明确设置最大观测年龄，没有配置时新鲜度未评估。计算不提升实现或验证状态，不生成交易指令。表达式、数据契约及尚未实现范围见 [条件检查说明](strategy-conditions.md)；没有供应商数据自动接入。
 
 ## 实际成交独立台账
 

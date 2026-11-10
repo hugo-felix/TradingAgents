@@ -35,6 +35,10 @@ def fixture(store):
                       'citation': '<script>测试出处</script>', 'kind': 'personal',
                       'state': 'defined', 'check': check})
     definition['rules']['entry'] = rules
+    stale = copy.deepcopy(rules[0])
+    stale['text'] = '显式过期阈值条件'
+    stale['check']['left']['max_age_seconds'] = 3599
+    rules.append(stale)
     draft = registry.save(definition)
     first = registry.confirm(draft['strategy_id'], expected_version=1, confirmed_by='tester')
     registry.save(definition, strategy_id=first['strategy_id'], expected_version=2)
@@ -88,11 +92,17 @@ def main():
         panel.locator('[type="submit"]').click()
         result = panel.locator('[aria-label="条件检查快照"]')
         result.locator('h4:has-text("SYNTHETIC")').wait_for()
-        for status in ('满足', '未满足', '需人工判断', '数据不足', '未实现', '定义校验失败'):
+        for status in ('满足', '未满足', '需人工判断', '数据不足', '数据已过期',
+                       '未实现', '定义校验失败'):
             assert status in result.inner_text(), status
         assert result.locator('script,img').count() == 0
         assert '30 CNY/share > 20 CNY/share' in result.inner_text()
         assert '调用者提供' in result.inner_text()
+        stale_result = result.locator('article').filter(has_text='显式过期阈值条件')
+        assert '暂停比较' in stale_result.inner_text()
+        assert '上限：3599 秒' in stale_result.inner_text()
+        assert '年龄：3600 秒' in stale_result.inner_text()
+        assert '未评估（规则未配置阈值）' in result.inner_text()
         result.locator('summary:has-text("左侧计算值")').first.click()
         assert '2020-01-02T15:05:00+08:00' in result.inner_text()
         assert '999' not in result.locator('article').first.inner_text()
@@ -146,11 +156,14 @@ def main():
         panel.locator('[data-condition-action="history"]').click()
         panel.locator(f'[data-check-id="{check_id}"]').click()
         result.locator('h4:has-text("SYNTHETIC")').wait_for()
+        assert '数据已过期' in result.inner_text()
+        assert '上限：3599 秒' in result.inner_text()
         page.locator('[data-action="strategy-version"][data-version="1"]').click()
         assert panel.locator('form').count() == 0
         assert '草稿尚未确认' in panel.inner_text()
         assert not errors, errors
-        print('Conditions browser acceptance passed: real API, six states, PIT evidence, escaping, '
+        print('Conditions browser acceptance passed: real API, seven states, explicit freshness, '
+              'PIT evidence, escaping, '
               'idempotency, pending navigation, retry, four widths, version isolation and reload.')
 
 

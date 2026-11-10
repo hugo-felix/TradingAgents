@@ -1,4 +1,5 @@
 import copy
+import json
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -254,3 +255,110 @@ def test_desktop_bridge_roundtrip_and_validation_errors(tmp_path):
     assert not api.check_strategy_conditions(sid, 1, AS_OF, dataset())['ok']
     assert not api.check_strategy_conditions(sid, 2, AS_OF, {})['ok']
     assert not api.get_strategy_check('missing')['ok']
+
+
+@pytest.mark.parametrize(('seconds', 'status'), [(3599, 'stale_data'), (3600, 'met'),
+                                               (3601, 'met'), (0, 'stale_data')])
+def test_explicit_observation_age_limit_and_boundary(tmp_path, seconds, status):
+    registry, confirmed = setup_registry(tmp_path, [comparison(
+        left={'metric': 'close', 'max_age_seconds': seconds})])
+    record = run(registry, confirmed)
+    condition = record['conditions'][0]
+    assert condition['status'] == status
+    assert condition['left']['freshness'] == {
+        'status': 'stale' if status == 'stale_data' else 'within_limit',
+        'latest_observed_at': observation(4, 30)['observed_at'],
+        'age_seconds': 3600.0, 'max_age_seconds': seconds}
+    assert condition['left']['observations'] == [observation(4, 30)]
+    assert condition['right']['value'] == '20'
+    assert registry.get(record['check_id']) == record
+    assert registry.strategies.get(confirmed['strategy_id'], 2) == confirmed
+
+
+def test_unconfigured_age_is_explicitly_unevaluated_and_old_snapshots_survive(tmp_path):
+    registry, confirmed = setup_registry(tmp_path)
+    record = run(registry, confirmed, as_of='2021-01-04T16:00:00+08:00')
+    assert record['conditions'][0]['status'] == 'met'
+    age = record['conditions'][0]['left']['freshness']
+    assert age['status'] == 'not_evaluated' and age['max_age_seconds'] is None
+    # Existing v1 evidence remains verbatim, not silently reclassified by the new engine.
+    old = copy.deepcopy(record)
+    old.update(engine='stockseek-conditions/1', check_id='old-engine-snapshot')
+    del old['conditions'][0]['left']['freshness']
+    with registry.store.connect() as db:
+        db.execute('INSERT INTO strategy_condition_checks VALUES (?, ?, ?, ?)',
+                   (old['check_id'], old['strategy_id'], old['version'], json.dumps(old)))
+    assert registry.get(old['check_id']) == old
+    assert run(registry, confirmed)['check_id'] != old['check_id']
+
+
+def test_mean_age_uses_latest_observation_not_revision_or_oldest_window_member(tmp_path):
+    mean = {'metric': 'close', 'aggregate': 'mean', 'window': 3, 'max_age_seconds': 3600}
+    registry, confirmed = setup_registry(tmp_path, [comparison('ge', right=mean)])
+    data = dataset()
+    data['series']['close']['observations'].append(
+        observation(4, 25, '2020-01-04T16:00:00+08:00'))
+    result = run(registry, confirmed, data, '2020-01-04T08:00:00Z')['conditions'][0]
+    assert result['status'] == 'met'
+    assert result['right']['freshness']['age_seconds'] == 3600
+    later = run(registry, confirmed, data, '2020-01-04T16:00:00.000001+08:00')
+    assert later['conditions'][0]['status'] == 'stale_data'
+    assert later['conditions'][0]['right']['freshness']['age_seconds'] > 3600
+
+
+@pytest.mark.parametrize('value', [None, True, False, -1, 31536001, 1.5, '3600', {}, []])
+def test_invalid_age_policy_cannot_produce_a_match(tmp_path, value):
+    registry, confirmed = setup_registry(tmp_path, [comparison(
+        left={'metric': 'close', 'max_age_seconds': value})])
+    assert run(registry, confirmed)['conditions'][0]['status'] == 'invalid_rule'
+
+
+def test_age_never_makes_future_or_missing_data_usable(tmp_path):
+    registry, confirmed = setup_registry(tmp_path, [comparison(
+        left={'metric': 'close', 'max_age_seconds': 3600})])
+    data = dataset()
+    data['series']['close']['observations'][-1]['value'] = None
+    assert run(registry, confirmed, data)['conditions'][0]['status'] == 'insufficient_data'
+    data['series']['close']['observations'] = [observation(5, 999)]
+    assert run(registry, confirmed, data)['conditions'][0]['status'] == 'insufficient_data'
+
+
+def test_zero_age_same_instant_and_delayed_revision_not_freshening_old_observation(tmp_path):
+    registry, confirmed = setup_registry(tmp_path, [comparison(
+        left={'metric': 'close', 'max_age_seconds': 0})])
+    data = dataset()
+    data['series']['close']['observations'][-1]['available_at'] = observation(4, 30)['observed_at']
+    result = run(registry, confirmed, data, '2020-01-04T07:00:00Z')['conditions'][0]
+    assert result['status'] == 'met' and result['left']['freshness']['age_seconds'] == 0
+    data['series']['close']['observations'].append(
+        observation(4, 40, '2020-01-04T16:00:00+08:00'))
+    result = run(registry, confirmed, data)['conditions'][0]
+    assert result['status'] == 'stale_data'
+    assert result['left']['value'] == '40'
+    assert result['left']['freshness']['age_seconds'] == 3600
+
+
+def test_stale_threshold_cannot_hide_unit_error_or_make_constant_age_valid(tmp_path):
+    registry, confirmed = setup_registry(tmp_path, [
+        comparison(left={'metric': 'close', 'max_age_seconds': 0},
+                   right={'constant': 20, 'unit': 'USD/share', 'source': 'test'}),
+        comparison(right={'constant': 20, 'unit': 'CNY/share', 'source': 'test',
+                          'max_age_seconds': 3600})])
+    assert all(row['status'] == 'invalid_rule' for row in
+               run(registry, confirmed)['conditions'][:2])
+
+
+def test_age_policy_change_requires_new_confirmed_version_and_snapshot(tmp_path):
+    registry, confirmed = setup_registry(tmp_path)
+    original = run(registry, confirmed)
+    definition = copy.deepcopy(confirmed['definition'])
+    definition['rules']['entry'][0]['check']['left']['max_age_seconds'] = 3599
+    sid = confirmed['strategy_id']
+    registry.strategies.save(definition, strategy_id=sid, expected_version=2)
+    with pytest.raises(ValueError, match='确认'):
+        registry.check(sid, 3, as_of=AS_OF, data=dataset())
+    updated = registry.strategies.confirm(sid, expected_version=3, confirmed_by='tester')
+    result = run(registry, updated)
+    assert result['conditions'][0]['status'] == 'stale_data'
+    assert result['check_id'] != original['check_id']
+    assert run(registry, confirmed) == original
